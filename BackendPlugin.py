@@ -1,15 +1,21 @@
 import requests
 import json
 import logging
+import time
+import shutil
+import os
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 INPUT_FILE = "INPUTBRIGDEOSMSGS"
+BACKUP_FILE = "INPUTBRIGDEOSMSGS.bak"
+
 OUTPUT_FILE = "OUTPUTBRIDGEMSGS"
 SERVER_URL = "http://localhost:9080"
 PROCESS_URL = f"{SERVER_URL}/BackendProcess?batch_size=20000"
 MAX_LOG_LEN = 80  # maximum characters of content to log
+INTERVAL = 5
 
 def upload_doc(doc):
     content_len = len(doc['content'])
@@ -21,22 +27,38 @@ def upload_doc(doc):
     logging.info(resp.text.strip())
 
 def process_messages():
-    # --- 1. Clear the output file at startup ---
+    # --- 1. Load the documents ---
+    try:
+        if os.path.exists(INPUT_FILE) and os.path.getsize(INPUT_FILE) > 0:
+             with open(INPUT_FILE, "r", encoding="utf-8") as f:
+                 # Parses lines. If the file is 0 bytes, docs becomes []
+                 docs = [json.loads(line) for line in f if line.strip()]
+
+             if docs:
+                 logging.info(f"Loaded {len(docs)} documents from {INPUT_FILE}")
+           
+                 # 1. Backup
+                 shutil.copy2(INPUT_FILE, BACKUP_FILE)
+
+                 # 2. CLEAR the file properly (0 bytes)
+                 # Opening in 'w' mode and immediately closing empties the file.
+                 with open(INPUT_FILE, "w", encoding="utf-8") as f:
+                     pass 
+             else:
+                 return
+        else:
+             return
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return
+ 
+    # --- 2. Clear the output file at startup ---
     try:
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
             f.write("") # Truncate file
         logging.info(f"Initialized {OUTPUT_FILE} (cleared).")
     except Exception as e:
         logging.error(f"Could not initialize output file: {e}")
-        return
-
-    # --- 2. Load the documents ---
-    try:
-        with open(INPUT_FILE, "r", encoding="utf-8") as f:
-            docs = json.load(f)
-        logging.info(f"Loaded {len(docs)} documents from {INPUT_FILE}")
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logging.error(f"Failed to read or parse input file: {e}")
         return
 
     has_import = False
@@ -141,5 +163,10 @@ def process_messages():
 
              
 if __name__ == "__main__":
-    process_messages()
-
+    logging.info(f"OSO backend plugin started. Polling every {INTERVAL}s...")
+    try:
+        while True:  
+            process_messages()
+            time.sleep(INTERVAL)
+    except KeyboardInterrupt:
+        logging.info("Service stopped manually.")

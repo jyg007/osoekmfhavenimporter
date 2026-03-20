@@ -10,17 +10,20 @@ Make sure `ekmfimportserver` is running in `frontend` mode and in `backend` mode
 
 ```
 ./EKMF_GetRSAPKey.sh
+```
+```
 {"status":"RSA key pair request registered"}
 ```
 
 
 ### 1.2 As OSO operator, Simulate OSO Empty iteration #1
 
-#### Issue the following to simulate FrontEnd OSO Plugin:
+Iteration is immediately processed in this environemnt.
+You can stop and start the OSO frontend plugin to simulate the OSO iteration.
+
+#### Check FrontEnd OSO Plugin:
 
 ```
-python FrontendPlugin.py
-
 2026-03-20 06:21:26,208 [INFO] Retrieved 1 documents from server.
 2026-03-20 06:21:26,211 [INFO] Successfully wrote 1 documents to INPUTBRIGDEOSMSGS
 2026-03-20 06:21:26,211 [INFO] Saved document ID=rsa-1774002086208502800, len=17, snippet=EKMFGENRSAKEYPAIR
@@ -29,6 +32,9 @@ python FrontendPlugin.py
 
 Check mocked internal created OSO documents as used in confirmation queues and bridges:
 
+```
+jq -r . INPUTBRIGDEOSMSGS.PREITERATION
+```
 ```
 [
     {
@@ -42,13 +48,16 @@ Check mocked internal created OSO documents as used in confirmation queues and b
 
 OSO documents are moved to input bridge and picked up by backend oso plugin when started.
 
-#### Issue the following to simulate BackEnd OSO Plugin:
+#### Start OSO Iteration
+
+```
+./OSO_StartIteration.sh
+```
+
+#### Check BackEnd OSO Plugin:
 
 
 ```
-python BackendPlugin.py 
-
-2026-03-20 06:25:19,431 [INFO] Initialized OUTPUTBRIDGEMSGS (cleared).
 2026-03-20 06:25:19,431 [INFO] Loaded 1 documents from INPUTBRIGDEOSMSGS
 2026-03-20 06:25:19,431 [INFO] Condition met for ID: rsa-1774002086208502800. Sending POST request...
 2026-03-20 06:25:19,581 [INFO] Successfully processed ID: rsa-1774002086208502800
@@ -59,7 +68,8 @@ You can check results to be send in either via OSO logs or via OSO documents
 
 ```
 jq -r . OUTPUTBRIDGEMSGS
-
+```
+```
 {
   "content": "-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA0AVMMTfwdSrum1BJC7jK\n/zG6iPCRqG+RwbQR/BhY2Qf2iLhlOUJh1sGfVAB6gJztkpOMp1X45fs/RzADFBzr\nknN3Tpp3o+HeUtMaoSQLKwaRIKGDv+ilpgYteKucD/L5IcCgqaGo+mhvO31KagjR\nbNnz0bR75em+ouDjSrMGVTH2ms/xdI96Y3VBsyjr/7o+dWyaPV//C15wZDGHJtRj\nOrVA+t+ExK89l5ZmRYy1B4AulcyG9faZ5pT/IJbFzWQO+7PRuXZPi1zpATUD52GT\nt+x1ZhEoxLC9pK4Lfk0OsqXmJdk5Iu+YrOZn9sheOUB8NvlUAHNyOUyI+LDuNkdz\n9FiyvzEuohsK/A9N1FDpwaUPiz640wUxr62jNKihiHHPC5JQuqcpY1yfdgGnWsuD\nbfDT2TEz8EQKApC+FnAOnPrK+kp0XjsVHEWfwxFA2kLjPMvQx5OMmma0QMx7I8o8\npQjy1/uYzx5w+YLi+LSPlsIaNzFIY4Un9uXsQUfP1mKnIujNYiIW19opYpaue0Ip\nmqCoyRQDHPmDcOtbPBJAJMJxgRntQryD3nZagY+W9eKH/H+nhGB4OUfaD4jetWLB\nOM4V1zAuYOVf4jO05EkEIrc8DX5Y1KWiTJHFhI5vqlO8dkv1iG7wuEqxaO5rnMjW\njL3/II+FvtGwRLY5qMCynDcCAwEAAQ==\n-----END PUBLIC KEY-----\n",
   "id": "rsa-1774002086208502800",
@@ -79,6 +89,8 @@ jq -r .content OUTPUTBRIDGEMSGS > public.pem
 #### 2.1 As EKMF Admin, Send OSO EKMF Message to provide transport key
 ```
 ./EKMF_SendTKEY.sh public.pem rsa-1774002086208502800 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+```
+```
 
 Uploading to http://localhost:8080/FrontEndUploadTKEY...
 Thu Mar 19 03:04:57 PM EDT 2026: ID=rsa-1774002086208502800 - Response:
@@ -99,11 +111,9 @@ Wait that all jobs be completed
 
 ### 2.3 As OSO Operator, simulate OSO Iteration #2
 
-#### Issue the following to simulate FrontEnd OSO Plugin:
+#### Check FrontEnd OSO Plugin:
 
 ```
-python FrontendPlugin.py
-
 2026-03-20 07:34:08,188 [INFO] Retrieved 11 documents from server.
 2026-03-20 07:34:08,214 [INFO] Successfully wrote 11 documents to INPUTBRIGDEOSMSGS
 2026-03-20 07:34:08,215 [INFO] Saved document ID=e6982e60-86ef-40a4-8cb0-e58d79de641d, len=983036, snippet=H4sIAAAAAAAA/3T8yaqtSw4mCL6Lj+MHNaYuXqVG6gwKqshBkqMk3z35txNx/wt7j/zgd52ztMxMXyPJ...
@@ -119,14 +129,16 @@ python FrontendPlugin.py
 2026-03-20 07:34:08,215 [INFO] Saved document ID=rsa-1774002086208502800, len=1024, snippet=9cdcb19eec522adb2d06a30f3962fcf1a31a9968fbdb978c76fc4aa2d33b05cd51e8b54c1b7ce366...
 ```
 
+#### Start OSO Iteration
 
-#### Issue the following to simulate BackEnd OSO Plugin:
+```
+./OSO_StartIteration.sh
+```
+
+#### Check BackEnd OSO Plugin:
 
 
 ```
-python BackendPlugin.py
-
-2026-03-20 07:35:07,635 [INFO] Initialized OUTPUTBRIDGEMSGS (cleared).
 2026-03-20 07:35:07,650 [INFO] Loaded 11 documents from INPUTBRIGDEOSMSGS
 2026-03-20 07:35:07,650 [INFO] Uploading document ID=e6982e60-86ef-40a4-8cb0-e58d79de641d, content length=983036, snippet=H4sIAAAAAAAA/3T8yaqtSw4mCL6Lj+MHNaYuXqVG6gwKqshBkqMk3z35txNx/wt7j/zgd52ztMxMXyPJ...
 2026-03-20 07:35:07,696 [INFO] Uploaded 10000 keys from document e6982e60-86ef-40a4-8cb0-e58d79de641d
@@ -184,10 +196,31 @@ Set HSM using `EP11_IBM_TARGET_HSM` environment variable
 
 ```
 export EP11_IBM_TARGET_HSM="4.16 3.16"
+export mode=backend
 ./ekmfimportserver 
 Initializing adapter 04 and domain 16
 Initializing adapter 03 and domain 16
 Backend server listening on :9080
+```
+
+## Start OSO plugins
+
+### Frontend Plugin
+
+```
+python FrontendPlugin.py
+
+2026-03-20 11:08:35,844 [INFO] Starting frontend plugin in infinite loop...
+
+```
+
+### Backend Plugin
+
+```
+python BackendPlugin.py
+
+2026-03-20 11:27:19,332 [INFO] OSO backend plugin started. Polling every 5s...
+
 ```
 
 ## Monitoring Crypto Adapters Performance
