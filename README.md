@@ -1,8 +1,8 @@
 #  EKMF Addon for OSO Haven Plugins
 
-## 1 Preparing for import
+## 1. Preparing for import
 
-### 1.1 As EMKF admin, Generate an OSO RSA Public key to prepare EKMF export file
+### 1.1 As EKMF admin, Generate an OSO RSA Public key to prepare EKMF export file
 
 You need to send the request to the addon.  This is expected to be processed asynchronously during the OSO iteration.
 
@@ -74,7 +74,7 @@ Save the RSA import public key by issuing the following command:
 jq -r .content OUTPUTBRIDGEMSGS > public.pem
 ```
 
-### 2 Importing keys in OSO via OSO EKMF messages
+### 2. Importing keys in OSO via OSO EKMF messages
 
 #### 2.1 As EKMF Admin, Send OSO EKMF Message to provide transport key
 ```
