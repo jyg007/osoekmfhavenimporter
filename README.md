@@ -45,6 +45,10 @@ Check mocked internal created OSO documents as used in confirmation queues and b
     }
 ]
 ```
+You can set this id as a value to reuse later when loading the transport key
+```
+RSAID=rsa-1774002086208502800
+```
 
 OSO documents are moved to input bridge and picked up by backend oso plugin when started.
 
@@ -87,14 +91,11 @@ Save the RSA import public key by issuing the following command:
 ### 2. Importing keys in OSO via OSO EKMF messages
 
 #### 2.1 As EKMF Admin, Send OSO EKMF Message to provide transport key
-Set the `R` variable with the id of your rsa key: 
-```
-R=rsa-1774002086208502800
-```
-Then send the transport to OSO
+
+Then send the transport to OSO using the `RSAID` value set when you created the RSA key pair in OSO:
 
 ```
-./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+./EKMF_SendTKEY.sh public.pem $RSAID 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
 ```
 ```
 
