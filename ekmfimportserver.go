@@ -533,7 +533,7 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 
 		// create a document
 		docs = append(docs, ImportTx{
-			ID:        uuid.New().String(),
+			ID:        "ekmfimport-"+uuid.New().String(),
 			Content:   b64Content,
 			Signature: "",
 			Metadata:  "EKMFKEYSIMPORT",
@@ -546,7 +546,7 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	if rsaKeyPairRequested {
 	        // Add EKMFGENRSAKEYPAIR document
         	docs = append(docs, ImportTx{
-	            ID:        fmt.Sprintf("rsa-%d", time.Now().UnixNano()),
+	            ID:        fmt.Sprintf("ekmfimport-rsa-%d", time.Now().UnixNano()),
         	    Content:   "EKMFGENRSAKEYPAIR",
 	            Signature: "",
         	    Metadata:  "EKMFIMPORT",
@@ -559,7 +559,7 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	transportKeyMu.Lock()
 	if transportKey != nil {
 	    docs = append(docs, ImportTx{
-        	ID:        transportKey.ID,
+        	ID:        "ekmfimport-tkey-"+transportKey.ID,
 	        Content:   transportKey.WrappedKey,
         	Signature: "",
 	        Metadata:  "EKMFTKEY",
@@ -744,11 +744,11 @@ func FrontEndUploadTKEYHandler(w http.ResponseWriter, r *http.Request) {
     }
     transportKeyMu.Unlock()
 
-    log.Printf("Transport ke set for RSA key: %s", req.KeyID)
+    log.Printf("Transport key set for RSA key: %s", req.KeyID)
 
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]string{
-        "status": "transport key stored",
-        "id":     req.KeyID,
+        "status": "transport key loaded",
+        "id":     "ekmfimport-tkey-"+req.KeyID,
     })
 }

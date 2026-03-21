@@ -30,6 +30,7 @@ def main():
         
         if not docs:
             #logging.info("No documents to retrieve from server. Exiting.")
+            time.sleep(INTERVAL)
             continue
     
         logging.info(f"Retrieved {len(docs)} documents from server.")
@@ -54,7 +55,6 @@ def main():
             logging.info(f"Saved document ID={doc.get('id')}, len={content_len}, snippet={snippet}")
 
         # 3. Wait for the specified interval
-        time.sleep(INTERVAL)
 
 if __name__ == "__main__":
     try:

@@ -33,7 +33,7 @@ You can stop and start the OSO frontend plugin to simulate the OSO iteration.
 Check mocked internal created OSO documents as used in confirmation queues and bridges:
 
 ```
-jq -r . INPUTBRIGDEOSMSGS.PREITERATION
+./OSOQueue.py pre
 ```
 ```
 [
@@ -67,7 +67,7 @@ OSO documents are moved to input bridge and picked up by backend oso plugin when
 You can check results to be send in either via OSO logs or via OSO documents
 
 ```
-jq -r . OUTPUTBRIDGEMSGS
+./OSOQueue.py post   
 ```
 ```
 {
@@ -81,7 +81,7 @@ jq -r . OUTPUTBRIDGEMSGS
 Save the RSA import public key by issuing the following command:
 
 ```
-jq -r .content OUTPUTBRIDGEMSGS > public.pem
+./OSOQueue.py post |  jq -r .documents[].content > public.pem
 ```
 
 ### 2. Importing keys in OSO via OSO EKMF messages
@@ -186,6 +186,8 @@ cat OUTPUTBRIDGEMSGS
 ```
 export mode=frontend
 ./ekmfimportserver 
+```
+```
 Frontend server listening on :8080
 ```
 
@@ -198,6 +200,8 @@ Set HSM using `EP11_IBM_TARGET_HSM` environment variable
 export EP11_IBM_TARGET_HSM="4.16 3.16"
 export mode=backend
 ./ekmfimportserver 
+```
+```
 Initializing adapter 04 and domain 16
 Initializing adapter 03 and domain 16
 Backend server listening on :9080
@@ -209,7 +213,8 @@ Backend server listening on :9080
 
 ```
 python FrontendPlugin.py
-
+```
+```
 2026-03-20 11:08:35,844 [INFO] Starting frontend plugin in infinite loop...
 
 ```
@@ -218,7 +223,8 @@ python FrontendPlugin.py
 
 ```
 python BackendPlugin.py
-
+```
+```
 2026-03-20 11:27:19,332 [INFO] OSO backend plugin started. Polling every 5s...
 
 ```
@@ -239,6 +245,8 @@ Use openssl command for this.  Alternatively `createTKEY` is provided to protect
 
 ```
 openssl rand -hex 32
+```
+```
 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
 ```
 
@@ -252,6 +260,8 @@ Convert the hexa transkey value into a cryptogram using `createskblob` command:
 ```
 export EP11_IBM_TARGET_HSM="4.16 3.16"
 ./createskblob 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+```
+```
 Initializing adapter 04 and domain 16
 Initializing adapter 03 and domain 16
 
@@ -260,7 +270,7 @@ TransportKey Blob: 0000000000000000000000000000000000000000000000000000000000000
 Csum : 12071000000100
 ```
 
-For convenience, set the `TKEY` environmnt variable with this cryptogram value.
+For convenience, set the `TKEY` environment variable with this cryptogram value.
 
 ```
 TKEY=00000000000000000000000000000000000000000000000000000000000000002dbfb11e9dc94e5517a4786c0eb7483d00000000000091840000000000000001123431259656d1a8db0ebeac7421d420feab1a92938ca86d5efb947cacf2f9fb36bbfa57e33ee924bb414880fc1d222d4c5b92e7b1c091a8a518c49d8caafca8e2a5b85ba3c753513359e43410dc35ad598d1f187fa230e765edf96f14f9a9592f9c1ff514d687b462f5a92dca14d05b0aecc5555fcc02d316e2938b735feac14a7237379320eb5b52b86ee4d2537db4c99b3f70729d02606202a7616673432f5f94c9c6b1f6a1c09f484a3be187914746a6ab15ea6ab1ee487558f5bb000e7518224f2b4cd032a23c2ed876bd884d16ee470e72bb1245ea9153fa3d0497c9b8eb700d26a1e673b414dd79970a90105b5034a2ce67009942f303ec46b885f87ff3c7dd48b6f11ad978bc09c043bceae89556362ed1b5e3a9897a03e97a63b4c2ce70ce684c586347cdcd4bf96cfd157bc6f18a5d6c77b05b09e3860379284a59266077c0ed188daf155a7b43ba6b9bd78b0ed25e6e18927631b569fa6a63cd40c9a3eeea6daff2c82e334fe84eea293adcfc98c46e381fb8e31b6deed8326212
