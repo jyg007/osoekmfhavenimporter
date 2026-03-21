@@ -30,6 +30,7 @@ import (
 	ep11 "osoekmfhavenimporter/ep11"
     	"encoding/asn1"
     	"encoding/pem"
+	"strings"
 )
 
 type InputKey struct {
@@ -191,9 +192,14 @@ func setTransportKeyHandler(w http.ResponseWriter, r *http.Request) {
         // Retrieve RSA private key using ID
         //------------------------------------------------------------------
         var key []byte
+	keyID := strings.TrimPrefix(payload.ID, "ekmfimport-tkey-")
 
-        err = db.QueryRow(`SELECT private_key FROM rsa_keys WHERE key_id = ?`, payload.ID).Scan(&key)
-        if err != nil {
+	err = db.QueryRow(
+	    `SELECT private_key FROM rsa_keys WHERE key_id = ?`,
+	    keyID,
+	).Scan(&key)
+        
+	if err != nil {
                 if err == sql.ErrNoRows {
                         http.Error(w,"rsa key not found ", http.StatusBadRequest)
 			return
@@ -666,7 +672,10 @@ func BackEndGetRSAKeyPairHandler(w http.ResponseWriter, r *http.Request) {
 
     // Generate UUID key ID
     // Store private key in SQLite
-    _, err = db.Exec("INSERT INTO rsa_keys(key_id, private_key) VALUES(?, ?)", req.ID, sk)
+
+    keyID := strings.TrimPrefix(req.ID, "ekmfimport-")
+
+    _, err = db.Exec("INSERT INTO rsa_keys(key_id, private_key) VALUES(?, ?)", keyID, sk)
     if err != nil {
         log.Printf("Failed to store private key: %v", err)
         http.Error(w, "Failed to store private key", http.StatusInternalServerError)
