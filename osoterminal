@@ -29,7 +29,7 @@ cat <<- _EOF_
    1. Request OSO RSA Key Pair                             4. OSO PreConfirmation Queue
    2. Upload a transport key                               5. OSO PostConfirmation Queue
    3. Upload in OSO wrapped EKMF seeds                     6. Key Import Result
-              
+              		                                   i. OSO PreConfirmation msg ids
                                                            r. Start OSO iteration                                   
    0. Quit
 
@@ -64,28 +64,30 @@ then
 		./EKMF_GetRSAPKey.sh
 	;;
 	4) 
-		./OSOQueue.py pre
+		./OSOQueue.py pre | jq -rC
+	;;
+	i) 
+		./OSOQueue.py pre | jq -r .documents[].id | xargs
 	;;
 	2) 
-		R=$(./OSOQueue.py post | jq -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .id' | sed -e 's/ekmfimport-//')
+		R=$(./OSOQueue.py post | jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .id' | sed -e 's/ekmfimport-//')
 		echo "id OSA rsa import key: $R"
-		./OSOQueue.py post |  jq -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
+		./OSOQueue.py post |  jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
 		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
 	;;
 	5) 
-		./OSOQueue.py post
+		./OSOQueue.py post | jq -rC
 	;;
 	3) 
 		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
 		for i in $LIST; do bash ./EKMF_SendKeys.sh $i & done
 	;;
 	6) 
-		./OSOQueue.py post  | jq -r .documents[].id | xargs
+		./OSOQueue.py post  | jq -C -r '.documents[] | select(.metadata=="EKMFKEYSIMPORT") |  .content' 
 	;;
 	r)
 		echo "Launching an Iteration"
    		./OSO_StartIteration.sh
-	   	echo "Completed"
 	;;
 	0) 
 		echo "Exiting OSO Terminal"
