@@ -1,0 +1,98 @@
+#!/bin/bash
+
+##############################################################################
+## © Copyright IBM Corp. and Jean-Yves Girard (jeanyvesgirard@free.fr) 2022-2024
+##
+## OSO Terminal v1.0.5.17
+## 
+###############################################################################
+
+
+BG_BLUE="$(tput setab 4)"
+BG_BLACK="$(tput setab 0)"
+FG_GREEN="$(tput setaf 2)"
+FG_WHITE="$(tput setaf 7)"
+FG_CYAN="$(tput setaf 6)"
+TOP=10
+
+function title {
+   echo -n ${BG_BLACK}${FG_CYAN}
+   clear
+cat <<- _EOF_
+
+   EKMF seed import commands to OSO		           OSO Action
+   -----------------------------------------               ----------------------------------------------
+_EOF_
+   echo -n ${BG_BLACK}${FG_WHITE}
+cat <<- _EOF_
+
+   1. Request OSO RSA Key Pair                             4. OSO PreConfirmation Queue
+   2. Upload a transport key                               5. OSO PostConfirmation Queue
+   3. Upload in OSO wrapped EKMF seeds                     6. Key Import Result
+              
+                                                           r. Start OSO iteration                                   
+   0. Quit
+
+_EOF_
+
+   tput cup $TOP 0
+   echo -n ${BG_BLACK}${FG_GREEN}
+   tput ed
+   tput cup $(( TOP + 1 )) 0
+}
+
+
+
+tput smcup
+title
+while [[ $REPLY != 0 ]]; do
+   tput cup $(( TOP + 1 )) 0
+   echo -n ${BG_BLACK}${FG_GREEN}
+   read -n 1 -t 3 -p "Enter selection > " selection
+if [[ $selection != "" ]] 
+then
+   tput cup $TOP 0
+   tput ed
+   tput cup $(( TOP + 2 )) 0
+   
+   echo -n ${BG_BLACK}${FG_WHITE}
+   echo
+   NEXT=1 
+   case $selection in
+
+	1) 
+		./EKMF_GetRSAPKey.sh
+	;;
+	4) 
+		./OSOQueue.py pre
+	;;
+	2) 
+		R=$(./OSOQueue.py post | jq -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .id' | sed -e 's/ekmfimport-//')
+		echo "id OSA rsa import key: $R"
+		./OSOQueue.py post |  jq -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
+		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+	;;
+	5) 
+		./OSOQueue.py post
+	;;
+	3) 
+		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
+		for i in $LIST; do bash ./EKMF_SendKeys.sh $i & done
+	;;
+	6) 
+		./OSOQueue.py post  | jq -r .documents[].id | xargs
+	;;
+	r)
+		echo "Launching an Iteration"
+   		./OSO_StartIteration.sh
+	   	echo "Completed"
+	;;
+	0) 
+		echo "Exiting OSO Terminal"
+		break
+	;;
+   esac
+   fi
+done
+tput rmcup
+
