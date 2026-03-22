@@ -26,14 +26,17 @@ func main() {
         target := ep11.HsmInit(hsmTarget)
  
       keyTemplate := ep11.Attributes{
-    C.CKA_CLASS:       C.CKO_SECRET_KEY,
-    C.CKA_KEY_TYPE:    C.CKK_AES,
+                C.CKA_CLASS:       C.CKO_SECRET_KEY,
+                C.CKA_KEY_TYPE:    C.CKK_AES,
    	        C.CKA_VALUE_LEN: 32 ,
-		C.CKA_UNWRAP: true,
-		C.CKA_WRAP: true,
-		C.CKA_DECRYPT: true,
-		C.CKA_ENCRYPT: true,
+//		C.CKA_UNWRAP: true,
+//		C.CKA_WRAP: true,
+//		C.CKA_DECRYPT: true,
+//		C.CKA_ENCRYPT: true,
                 C.CKA_EXTRACTABLE: true,
+                C.CKA_UNWRAP: false, 
+                C.CKA_WRAP: true,
+                C.CKA_IBM_USE_AS_DATA: true,
       }
 
 	var aeskey ep11.KeyBlob

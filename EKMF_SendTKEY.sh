@@ -7,7 +7,8 @@ FRONTEND_URL="http://localhost:8080/FrontEndUploadTKEY"
 # --- 2. Check for Arguments ---
 # We expect 3 arguments: pubkey_path rsa_id hex_seed
 if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 <pubkey_path> <rsa_id> <hex_seed>"
+   # echo "Usage: $0 <pubkey_path> <rsa_id> <hex_seed>"
+    echo "Usage: $0 <pubkey_path> <rsa_id> <tkey blob>"
     echo "Example: $0 /tmp/public.pem rsa-123 8c123..."
     exit 1
 fi
@@ -18,9 +19,12 @@ HEX_SEED=$3
 
 # --- 3. Run the Wrapper and Capture JSON ---
 # We use grep to ignore the "Successfully loaded..." text line
-RAW_JSON=$(./rsawrapTKEY "$PUB_KEY" "$RSA_ID" "$HEX_SEED" | grep -o '{.*}')
+#RAW_JSON=$(./rsawrapTKEY "$PUB_KEY" "$RSA_ID" "$HEX_SEED" | grep -o '{.*}')
+ASN1PK=$(openssl pkey -pubin -in public.pem -outform DER | xxd -p -c 1000)
+WRAPPEDKEY=$(./hsmrsawrapTKEY $ASN1PK $HEX_SEED | grep -v Initia)
+RAW_JSON=$(echo "{\"keyid\":\"$RSA_ID\",\"wrappedkey\":\"$WRAPPEDKEY\"}")
 
-if [ -z "$RAW_JSON" ]; then
+if [ -z "$WRAPPEDKEY" ]; then
     echo "Error: rsawrapTKEY failed or produced no JSON output."
     exit 1
 fi

@@ -320,7 +320,10 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	if wrappingKey == nil {
 		keyListMu.Unlock()
 		http.Error(w, "Transport key not set", http.StatusBadRequest)
-		log.Println("[BackendProcess] Transport key not set")
+		log.Println("[BackendProcess] Transport key not set, flushing import messages")
+		keyListMu.Lock()
+		keyList = nil
+		keyListMu.Unlock()
 		return
 	}
 	keyListMu.Unlock()
@@ -388,6 +391,7 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	    FailedCount:  len(failedIDs),
 	    FailedIDs:    failedIDs,
 	}
+        log.Printf("Keys import finished: %d successful, %d failed", result.SuccessCount, result.FailedCount)
 
 	// 2. Marshal the result to a JSON string for the "content" field
 	resultBytes, _ := json.Marshal(result)
@@ -400,6 +404,12 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	    "signature": "",
 	    "metadata":  "EKMFKEYSIMPORT",
 	}
+
+	// Flushing imported messages
+	keyListMu.Lock()
+	keyList = nil
+	wrappingKey = nil
+	keyListMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(finalResp)

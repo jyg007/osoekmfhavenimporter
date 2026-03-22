@@ -7,6 +7,7 @@
 ## 
 ###############################################################################
 
+export EP11_IBM_TARGET_HSM="4.16 3.16"
 
 BG_BLUE="$(tput setab 4)"
 BG_BLACK="$(tput setab 0)"
@@ -14,6 +15,8 @@ FG_GREEN="$(tput setaf 2)"
 FG_WHITE="$(tput setaf 7)"
 FG_CYAN="$(tput setaf 6)"
 TOP=10
+
+
 
 function title {
    echo -n ${BG_BLACK}${FG_CYAN}
@@ -27,10 +30,11 @@ _EOF_
 cat <<- _EOF_
 
    1. Request OSO RSA Key Pair                             4. OSO PreConfirmation Queue
-   2. Upload a transport key                               5. OSO PostConfirmation Queue
-   3. Upload in OSO wrapped EKMF seeds                     6. Key Import Result
-              		                                   i. OSO PreConfirmation msg ids
-                                                           r. Start OSO iteration                                   
+   n. Create a new transport key                           i. OSO PreConfirmation msg ids
+   g. Generate new seeds                                   5. OSO PostConfirmation Queue
+
+   2. Upload a transport key  		                   6. Key Import Result
+   3. Upload in OSO wrapped EKMF seeds                     r. Start OSO iteration                                   
    0. Quit
 
 _EOF_
@@ -71,23 +75,64 @@ then
 	;;
 	2) 
 		R=$(./OSOQueue.py post | jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .id' | sed -e 's/ekmfimport-//')
-		echo "id OSA rsa import key: $R"
-		./OSOQueue.py post |  jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
-		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+		# If R is empty → read it from RSAID
+		if [ -z "$R" ]; then
+		    if [ -f RSAID ]; then
+		        R=$(tr -d '\n' < RSAID)
+		    else
+		        echo "Error: no RSA id returned and RSAID file not found."
+		        exit 1
+		    fi
+		else
+		    # If R exists → store it
+		    printf "%s" "$R" > RSAID
+		    ./OSOQueue.py post |  jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
+		fi
+		echo "rsa import key: $R"
+#		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
+		./EKMF_SendTKEY.sh public.pem $R $(cat TKEY)
+	;;
+	g)      
+		read -p "How many keys per thread? " KEYGENNB
+		echo "Generating new seeds"
+		echo 
+		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"
+		for i in $LIST; do echo "Job $i started" && ./ekmfexport $(cat TKEY) "${KEYGENNB:=1}" | grep -v domain | gzip -c | base64 -w0 > K/keys_set.$i.gz.b64 & done	
+		wait
+		echo "All jobs finished ✅"
+	;;
+	n)
+		echo "Generating new transport key"
+		echo
+		R=$(./createTKEY | grep -v Initializing)
+		TKEY=$(echo "$R" | grep Generated | sed -e '1s/.* //')
+		echo $TKEY > TKEY
+		echo "$R" 
 	;;
 	5) 
 		./OSOQueue.py post | jq -rC
 	;;
 	3) 
 		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
-		for i in $LIST; do bash ./EKMF_SendKeys.sh $i & done
+		for i in $LIST; do echo "Upload $i started" && bash ./EKMF_SendKeys.sh $i & done
+		wait
+		echo "All uploads finished ✅"
 	;;
 	6) 
 		./OSOQueue.py post  | jq -C -r '.documents[] | select(.metadata=="EKMFKEYSIMPORT") |  .content' 
 	;;
+	K)
+		base64 -d K/keys_set.11.gz.b64 | gunzip -c | head -n 35
+	;;
 	r)
-		echo "Launching an Iteration"
+		echo "OSO Iteration started"
    		./OSO_StartIteration.sh
+		for in in 1 2 3 4 5
+		do 
+			sleep 1
+			echo -n "."
+		done
+		echo "OSO done"
 	;;
 	0) 
 		echo "Exiting OSO Terminal"

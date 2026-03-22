@@ -1,4 +1,4 @@
-all: ekmfimportserver ekmfexport createTKEY rsawrapTKEY createskblob
+all: ekmfimportserver ekmfexport createTKEY rsawrapTKEY createskblob hsmrsawrapTKEY
 
 
 ekmfimportserver: ekmfimportserver.go
@@ -11,6 +11,9 @@ createTKEY: createTKEY.go
 	go build $^
 
 rsawrapTKEY: rsawrapTKEY.go
+	go build $^
+
+hsmrsawrapTKEY: hsmrsawrapTKEY.go
 	go build $^
 
 createskblob: createskblob.go

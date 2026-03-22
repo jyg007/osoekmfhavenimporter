@@ -145,8 +145,8 @@ def process_messages():
 
     # --- 4. Final Trigger Call ---
     # Only calls if BOTH conditions were met at least once
-    if has_import and has_keys_import:
-        logging.info("Both EKMFIMPORT and EKMFKEYSIMPORT detected. Triggering BackendProcess...")
+    if has_keys_import:
+        logging.info("Triggering BackendProcess...")
         try:
             # Equivalent to your curl -X POST
             final_resp = requests.post(PROCESS_URL)
