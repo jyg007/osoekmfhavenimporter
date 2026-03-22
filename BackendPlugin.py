@@ -148,18 +148,22 @@ def process_messages():
     if has_keys_import:
         logging.info("Triggering BackendProcess...")
         try:
-            # Equivalent to your curl -X POST
             final_resp = requests.post(PROCESS_URL)
-            final_resp.raise_for_status()
-            # Append final_resp to the output file
-            with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                f.write(final_resp.text.strip() + "\n")
-            logging.info(f"Batch process triggered successfully: {final_resp.text}")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to trigger final Batch process: {e}")
+            # Check response status and log reason if failed
+            if final_resp.status_code >= 400:
+                logging.error(
+                    f"Failed to trigger final Batch process: "
+                    f"{final_resp.status_code} {final_resp.reason} - {final_resp.text.strip()}"
+                )
+            else:
+                # Append successful response to output file
+                with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+                    f.write(final_resp.text.strip() + "\n")
+                logging.info(f"Batch process triggered successfully: {final_resp.text.strip()}")
+        except requests.RequestException as e:
+            logging.error(f"Request exception when triggering final Batch process: {e}")
     else:
         logging.info("Criteria for final Batch process not met (requires both IMPORT types).")
-
 
              
 if __name__ == "__main__":

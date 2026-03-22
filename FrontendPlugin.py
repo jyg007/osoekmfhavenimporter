@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 
 SERVER_URL = "http://localhost:8080"
 MAX_LOG_LEN = 80  # maximum characters of content to log
-OUTPUT_FILE = "INPUTBRIGDEOSMSGS.PREITERATION"
+OUTPUT_FILE = "INPUTQUEUEMSGS"
 INTERVAL = 5  # Seconds to wait between queries
 
 def get_import_txs():

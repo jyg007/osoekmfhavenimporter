@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SOURCE="INPUTBRIGDEOSMSGS.PREITERATION"
+SOURCE="INPUTQUEUEMSGS"
 DEST="INPUTBRIGDEOSMSGS"
 
     # Check if file has data (size > 0)

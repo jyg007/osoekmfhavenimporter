@@ -22,15 +22,14 @@ function title {
    echo -n ${BG_BLACK}${FG_CYAN}
    clear
 cat <<- _EOF_
-
    EKMF seed import commands to OSO		           OSO Action
    -----------------------------------------               ----------------------------------------------
 _EOF_
    echo -n ${BG_BLACK}${FG_WHITE}
 cat <<- _EOF_
-
    1. Request OSO RSA Key Pair                             4. OSO PreConfirmation Queue
-   n. Create a new transport key                           i. OSO PreConfirmation msg ids
+                                                           i. OSO PreConfirmation msg ids
+   n. Create a new transport key                          
    g. Generate new seeds                                   5. OSO PostConfirmation Queue
 
    2. Upload a transport key  		                   6. Key Import Result
@@ -68,9 +67,11 @@ then
 		./EKMF_GetRSAPKey.sh
 	;;
 	4) 
+		echo "PreConfirmation Queue"
 		./OSOQueue.py pre | jq -rC
 	;;
 	i) 
+		echo "PreConfirmation Queue Msg Ids"
 		./OSOQueue.py pre | jq -r .documents[].id | xargs
 	;;
 	2) 
@@ -110,10 +111,12 @@ then
 		echo "$R" 
 	;;
 	5) 
+		echo "PostConfirmation Queue"
 		./OSOQueue.py post | jq -rC
 	;;
 	3) 
-		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
+#		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
+		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 "
 		for i in $LIST; do echo "Upload $i started" && bash ./EKMF_SendKeys.sh $i & done
 		wait
 		echo "All uploads finished ✅"

@@ -10,7 +10,7 @@ if len(sys.argv) != 2:
 mode = sys.argv[1]
 
 if mode == "pre":
-    input_file = "INPUTBRIGDEOSMSGS.PREITERATION"
+    input_file = "INPUTQUEUEMSGS"
 elif mode == "post":
     input_file = "OUTPUTBRIDGEMSGS"
 else:

@@ -487,11 +487,39 @@ func batchWriter(results <-chan ProcessedKey, wg *sync.WaitGroup, successCount *
 
 	count := 0
 
+        batchSize := 50000
+        startTime := time.Now()
+        lastLogTime := startTime
+        lastLogCount := 0
+    
+        for r := range results {
+            _, err := stmt.Exec(r.KeyID, r.Key, r.Scheme)
+            if err != nil {
+                log.Printf("batchWriter: failed to insert key %s: %v", r.KeyID, err)
+                continue
+            }
+    
+            count++
+    
+            // Log every 50k keys
+            if count%batchSize == 0 {
+                now := time.Now()
+                elapsed := now.Sub(lastLogTime).Seconds()
+                totalElapsed := now.Sub(startTime).Seconds()
+                batchProcessed := count - lastLogCount
+                speed := float64(batchProcessed) / elapsed
+                log.Printf("[batchWriter] Processed %d keys (batch %d), batch time %.2fs, batch speed %.2f keys/sec, total time %.2fs",
+                    count, count/batchSize, elapsed, speed, totalElapsed)
+                lastLogTime = now
+                lastLogCount = count
+            }
+        }
+/*
 	for r := range results {
 		stmt.Exec(r.KeyID, r.Key, r.Scheme)
 		count++
 	}
-
+*/
 	tx.Commit()
 	*successCount = count
 }
