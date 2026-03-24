@@ -75,7 +75,7 @@ then
 		./OSOQueue.py pre | jq -r .documents[].id | xargs
 	;;
 	2) 
-		R=$(./OSOQueue.py post | jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .id' | sed -e 's/ekmfimport-//')
+		R=$(./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type == "EKMFRSAIMPORT") | (.metadata | fromjson).keyid')
 		# If R is empty → read it from RSAID
 		if [ -z "$R" ]; then
 		    if [ -f RSAID ]; then
@@ -87,7 +87,7 @@ then
 		else
 		    # If R exists → store it
 		    printf "%s" "$R" > RSAID
-		    ./OSOQueue.py post |  jq -C -r '.documents[0] | select(.metadata=="EKMFRSAIMPORT") | .content' > public.pem
+		    ./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type=="EKMFRSAIMPORT") | .content' > public.pem 
 		fi
 		echo "rsa import key: $R"
 #		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
@@ -122,7 +122,7 @@ then
 		echo "All uploads finished ✅"
 	;;
 	6) 
-		./OSOQueue.py post  | jq -C -r '.documents[] | select(.metadata=="EKMFKEYSIMPORT") |  .content' 
+		./OSOQueue.py post | jq -r '.documents[] | select((.metadata | fromjson).type=="EKMFIMPORTRESULT") | .content'
 	;;
 	K)
 		base64 -d K/keys_set.11.gz.b64 | gunzip -c | head -n 35

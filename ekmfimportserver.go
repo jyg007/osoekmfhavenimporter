@@ -30,7 +30,7 @@ import (
 	ep11 "osoekmfhavenimporter/ep11"
     	"encoding/asn1"
     	"encoding/pem"
-	"strings"
+	//"strings"
 )
 
 type InputKey struct {
@@ -66,6 +66,11 @@ type ImportTx struct {
 type TransportKey struct {
     ID         string
     WrappedKey string
+}
+
+type Meta struct {
+	Type  string `json:"type"`
+	KeyID string `json:"keyid"`
 }
 
 var (
@@ -191,8 +196,20 @@ func setTransportKeyHandler(w http.ResponseWriter, r *http.Request) {
         //------------------------------------------------------------------
         // Retrieve RSA private key using ID
         //------------------------------------------------------------------
-        var key []byte
-	keyID := strings.TrimPrefix(payload.ID, "ekmfimport-tkey-")
+	var meta Meta
+
+	if payload.Metadata != "" {
+		err := json.Unmarshal([]byte(payload.Metadata), &meta)
+		if err != nil {
+			http.Error(w, "Invalid metadata JSON", http.StatusBadRequest)
+			return
+		}
+	}
+
+	keyID := meta.KeyID
+       
+	 var key []byte
+	//keyID := strings.TrimPrefix(payload.ID, "ekmfimport-tkey-")
 
 	err = db.QueryRow(
 	    `SELECT private_key FROM rsa_keys WHERE key_id = ?`,
@@ -259,7 +276,7 @@ func setTransportKeyHandler(w http.ResponseWriter, r *http.Request) {
 	    "id":       payload.ID,
 	    "content":  string(contentBytes), 
 	    "signature":   "",
-	    "metadata": "EKMFIMPORT",
+   	    "metadata":  fmt.Sprintf(`{"type":"EKMFTKEY","keyid":"%s"}`, keyID),
 	}
 
         w.Header().Set("Content-Type", "application/json")
@@ -399,10 +416,10 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	// 3. Build the final envelope response
 	finalResp := map[string]interface{}{
 	    // Using a standard ISO-like timestamp for the ID
-	    "id":        time.Now().Format("20060102-150405"), 
+	    "id":        uuid.New().String(),
 	    "content":   string(resultBytes),
 	    "signature": "",
-	    "metadata":  "EKMFKEYSIMPORT",
+	    "metadata":  fmt.Sprintf(`{"type":"EKMFIMPORTRESULT"}` ),
 	}
 
 	// Flushing imported messages
@@ -577,10 +594,10 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 
 		// create a document
 		docs = append(docs, ImportTx{
-			ID:        "ekmfimport-"+uuid.New().String(),
+			ID:        uuid.New().String(),
 			Content:   b64Content,
 			Signature: "",
-			Metadata:  "EKMFKEYSIMPORT",
+			Metadata:  fmt.Sprintf(`{"type":"EKMFKEYSIMPORT"}`),
 		})
 	}
 
@@ -589,11 +606,12 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	rsaFlagMu.Lock()
 	if rsaKeyPairRequested {
 	        // Add EKMFGENRSAKEYPAIR document
+		rsakeyid := fmt.Sprintf("rsa-%d", time.Now().UnixNano())
         	docs = append(docs, ImportTx{
-	            ID:        fmt.Sprintf("ekmfimport-rsa-%d", time.Now().UnixNano()),
+	            ID:        uuid.New().String(),
         	    Content:   "EKMFGENRSAKEYPAIR",
 	            Signature: "",
-        	    Metadata:  "EKMFIMPORT",
+		    Metadata:  fmt.Sprintf(`{"type":"EKMFIMPORT", "keyid":"%s"}`,rsakeyid ),
 	        })
         	rsaKeyPairRequested = false // clear the flag
 	    }
@@ -603,10 +621,10 @@ func FrontEndGetEMKFOSOMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	transportKeyMu.Lock()
 	if transportKey != nil {
 	    docs = append(docs, ImportTx{
-        	ID:        "ekmfimport-tkey-"+transportKey.ID,
+        	ID:        uuid.New().String(), 
 	        Content:   transportKey.WrappedKey,
         	Signature: "",
-	        Metadata:  "EKMFTKEY",
+		Metadata:  fmt.Sprintf(`{"type":"EKMFTKEY","keyid":"%s"}`, transportKey.ID),
 	    })
     	    // clear the key after returning
     	    transportKey = nil
@@ -711,7 +729,18 @@ func BackEndGetRSAKeyPairHandler(w http.ResponseWriter, r *http.Request) {
     // Generate UUID key ID
     // Store private key in SQLite
 
-    keyID := strings.TrimPrefix(req.ID, "ekmfimport-")
+//     keyID := strings.TrimPrefix(req.ID, "ekmfimport-")
+	var meta Meta
+
+    if req.Metadata != "" {
+	err := json.Unmarshal([]byte(req.Metadata), &meta)
+	if err != nil {
+		http.Error(w, "Unable to get key id Invalid metadata JSON in EKMFGENRSAKEYPAIR message", http.StatusBadRequest)
+		return
+	}
+    } 
+
+    keyID := meta.KeyID
 
     _, err = db.Exec("INSERT INTO rsa_keys(key_id, private_key) VALUES(?, ?)", keyID, sk)
     if err != nil {
@@ -740,7 +769,7 @@ func BackEndGetRSAKeyPairHandler(w http.ResponseWriter, r *http.Request) {
         "id":       req.ID,
         "content":  publicPEM,
         "signature": "",
-        "metadata": "EKMFRSAIMPORT",
+	"metadata":  fmt.Sprintf(`{"type":"EKMFRSAIMPORT","keyid":"%s"}`,keyID ),
     }
 
     w.Header().Set("Content-Type", "application/json")

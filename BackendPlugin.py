@@ -67,13 +67,26 @@ def process_messages():
     # --- 3. Iterate and filter ---
     for doc in docs:
         metadata = doc.get("metadata")
+
+        doc_type = None
+        key_id = None     # initialize before parsing
+
+        try:
+            meta = json.loads(metadata)
+
+            tx_type = meta.get("type")
+            key_id = meta.get("keyid")
+
+        except json.JSONDecodeError:
+            pass
+
         content = doc.get("content")
         doc_id = doc.get("id")
-        if metadata == "EKMFKEYSIMPORT":
+        if tx_type  == "EKMFKEYSIMPORT":
             has_keys_import = True # Mark that we found a Keys Import
             upload_doc(doc)
 
-        if metadata == "EKMFIMPORT":
+        if tx_type == "EKMFIMPORT":
             logging.info(f"Condition met for ID: {doc_id}. Sending POST request...")
             
             try:
@@ -107,9 +120,9 @@ def process_messages():
         # -----------------------------------------------------------
         # 2) NEW case: Upload Transport Key (EKMFTKEY)
         # -----------------------------------------------------------
-        if metadata == "EKMFTKEY":
+        if tx_type == "EKMFTKEY":
 
-            logging.info(f"Submitting transport key for ID: {doc_id}")
+            logging.info(f"Submitting transport key for ID: {key_id}")
             has_import = True # Mark that we found an Import
             
             try:
