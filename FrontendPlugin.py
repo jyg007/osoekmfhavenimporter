@@ -12,8 +12,8 @@ OUTPUT_FILE = "INPUTQUEUEMSGS"
 INTERVAL = 5  # Seconds to wait between queries
 
 def get_import_txs():
-    try:
-        resp = requests.get(f"{SERVER_URL}/FrontEndGetEMKFOSOMsgs?keys_per_doc=10000")
+    try:                                 
+        resp = requests.get(f"{SERVER_URL}/FrontendGetMsgs?keys_per_doc=10000")
         resp.raise_for_status()
         docs = resp.json()
         if docs is None:

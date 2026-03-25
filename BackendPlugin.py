@@ -13,20 +13,36 @@ BACKUP_FILE = "INPUTBRIGDEOSMSGS.bak"
 
 OUTPUT_FILE = "OUTPUTBRIDGEMSGS"
 SERVER_URL = "http://localhost:9080"
-PROCESS_URL = f"{SERVER_URL}/BackendProcess?batch_size=20000"
 MAX_LOG_LEN = 80  # maximum characters of content to log
 INTERVAL = 5
 
-def upload_doc(doc):
-    content_len = len(doc['content'])
-    snippet = doc['content'][:MAX_LOG_LEN] + ("..." if content_len > MAX_LOG_LEN else "")
-    logging.info(f"Uploading document ID={doc['id']}, content length={content_len}, snippet={snippet}")
+ekmf_has_keys_import = False
 
-    resp = requests.post(f"{SERVER_URL}/BackEndKeysImportFilesUpload", json=doc)
-    resp.raise_for_status()
-    logging.info(resp.text.strip())
+def to_oso():
+   
+    try:
+        response = requests.get(f"{SERVER_URL}/BackendGetEKMFMsgs")
+        response.raise_for_status()
 
-def process_messages():
+        txs = response.json()  # expected: a list of ImportTx objects
+
+        if not txs:
+            return
+
+        with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+            for tx in txs:
+                # Dump the whole tx dict as a single JSON line
+                f.write(json.dumps(tx, separators=(",", ":")) + "\n")
+
+        logging.info(f"Saved {len(txs)} transactions")
+
+    except requests.RequestException as e:
+        logging.error(f"Failed to fetch transactions: {e}")
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to decode JSON: {e}")
+
+
+def to_ekmf():
     # --- 1. Load the documents ---
     try:
         if os.path.exists(INPUT_FILE) and os.path.getsize(INPUT_FILE) > 0:
@@ -61,129 +77,60 @@ def process_messages():
         logging.error(f"Could not initialize output file: {e}")
         return
 
-    has_import = False
-    has_keys_import = False
-
+    ########################################################################################
     # --- 3. Iterate and filter ---
     for doc in docs:
         metadata = doc.get("metadata")
-
-        doc_type = None
-        key_id = None     # initialize before parsing
+        doc_id = doc.get("id")
+        source = None
 
         try:
             meta = json.loads(metadata)
-
-            tx_type = meta.get("type")
-            key_id = meta.get("keyid")
-
+            source = meta.get("source")
         except json.JSONDecodeError:
-            pass
+            logging.warning(f"Failed to parse metadata for doc ID: {doc_id}")
+            continue
 
-        content = doc.get("content")
-        doc_id = doc.get("id")
-        if tx_type  == "EKMFKEYSIMPORT":
-            has_keys_import = True # Mark that we found a Keys Import
-            upload_doc(doc)
-
-        if tx_type == "EKMFIMPORT":
-            logging.info(f"Condition met for ID: {doc_id}. Sending POST request...")
-            
-            try:
-                payload = {
-                    "id": doc_id,
-                    "content": content,
-                    "signature": doc.get("signature", ""),
-                    "metadata": metadata
-                }
-
-                response = requests.post(
-                    f"{SERVER_URL}/BackEndGetRSAKeyPair",  
-                    json=payload,  
-                    headers={"Content-Type": "application/json"}
-                )
-                
-                if response.status_code == 200:
-                    logging.info(f"Successfully processed ID: {doc_id}")
-                    
-                    # --- 4. Append response to OUTPUTBRIDGEMSGS ---
-                    with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                        # Writing the raw response text (the publicPEM or JSON) 
-                        # and adding a newline so messages don't run together
-                        f.write(response.text.strip() + "\n")
-                
-                else:
-                    logging.warning(f"Backend returned error for ID {doc_id}: {response.status_code} - {response.text}")
-            
-            except requests.exceptions.RequestException as e:
-               logging.error(f"Network error while calling backend for ID {doc_id}: {e}")
-        # -----------------------------------------------------------
-        # 2) NEW case: Upload Transport Key (EKMFTKEY)
-        # -----------------------------------------------------------
-        if tx_type == "EKMFTKEY":
-
-            logging.info(f"Submitting transport key for ID: {key_id}")
-            has_import = True # Mark that we found an Import
-            
-            try:
-                payload = {
-                    "id": doc_id,
-                    "content": content,   # this is already the hex wrapped key
-                    "signature": doc.get("signature", ""),
-                    "metadata": metadata
-                }
-    
-                response = requests.post(
-                    "http://localhost:9080/BackendUploadTKey",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-
-                if response.status_code == 200:
-                    logging.info(f"Transport key successfully uploaded for ID: {doc_id}")
-                    logging.info(response.text)
-                    
-                    with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                        # Writing the raw response text (the publicPEM or JSON) 
-                        # and adding a newline so messages don't run together
-                        f.write(response.text.strip() + "\n")
-
-                else:
-                    logging.warning(
-                        f"Upload failed for ID {doc_id}: {response.status_code} - {response.text}"
+        # --- EKMF source handling ---
+        if source == "EKMF":
+                try:
+                    response = requests.post(
+                        f"{SERVER_URL}/BackendPostEKMFMsg",
+                        json=doc,
+                        headers={"Content-Type": "application/json"},
                     )
+                    if response.status_code == 204:
+                        logging.info(f"Successfully processed ID: {doc_id}")
+                    else:
+                        logging.warning(f"Backend returned error for ID {doc_id}: {response.status_code} - {response.text}")
+                except requests.exceptions.RequestException as e:
+                    logging.error(f"Network error for ID {doc_id}: {e}")
 
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Network error while uploading transport key for ID {doc_id}")
-
-    # --- 4. Final Trigger Call ---
-    # Only calls if BOTH conditions were met at least once
-    if has_keys_import:
-        logging.info("Triggering BackendProcess...")
-        try:
-            final_resp = requests.post(PROCESS_URL)
-            # Check response status and log reason if failed
-            if final_resp.status_code >= 400:
-                logging.error(
-                    f"Failed to trigger final Batch process: "
-                    f"{final_resp.status_code} {final_resp.reason} - {final_resp.text.strip()}"
-                )
-            else:
-                # Append successful response to output file
-                with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                    f.write(final_resp.text.strip() + "\n")
-                logging.info(f"Batch process triggered successfully: {final_resp.text.strip()}")
-        except requests.RequestException as e:
+    ########################################################################################
+    # --- Final Trigger Call ---
+    try:
+       final_resp = requests.post(f"{SERVER_URL}/BackendEKMFImport?batch_size=20000")
+       # Check response status and log reason if failed
+       if final_resp.status_code >= 400:
+           logging.error(
+               f"Failed to trigger final Batch process: "
+               f"{final_resp.status_code} {final_resp.reason} - {final_resp.text.strip()}"
+            )
+    except requests.RequestException as e:
             logging.error(f"Request exception when triggering final Batch process: {e}")
-    else:
-        logging.info("Criteria for final Batch process not met (requires both IMPORT types).")
+####################################################################
+#        else:
+#  Non-EKMF processing
+#####################################################        
 
              
 if __name__ == "__main__":
     logging.info(f"OSO backend plugin started. Polling every {INTERVAL}s...")
     try:
         while True:  
-            process_messages()
+            ekmf_has_keys_import = False
+            to_ekmf()
+            to_oso()
             time.sleep(INTERVAL)
     except KeyboardInterrupt:
         logging.info("Service stopped manually.")

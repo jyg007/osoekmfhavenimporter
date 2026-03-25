@@ -73,14 +73,13 @@ func main() {
 
 		keyTemplate := ep11.Attributes{
 			C.CKA_CLASS:     C.CKO_SECRET_KEY,
-			C.CKA_KEY_TYPE:  C.CKK_GENERIC_SECRET,
+			C.CKA_KEY_TYPE:  C.CKK_AES,
 			C.CKA_VALUE_LEN: 32,
-			C.CKA_ID:        keyID,
 		}
 
 		key, csum, err := ep11.GenerateKey(
 			target,
-			ep11.Mech(C.CKM_GENERIC_SECRET_KEY_GEN, nil),
+			ep11.Mech(C.CKM_AES_KEY_GEN, nil),
 			keyTemplate,
 		)
 		if err != nil {

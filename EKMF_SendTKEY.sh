@@ -1,13 +1,10 @@
 #!/bin/bash
 
 # --- 1. Configuration ---
-# Update this to your actual frontend address
-FRONTEND_URL="http://localhost:8080/FrontEndUploadTKEY"
+FRONTEND_URL="http://localhost:8080/FrontendEKMFCmd"
 
 # --- 2. Check for Arguments ---
-# We expect 3 arguments: pubkey_path rsa_id hex_seed
 if [ "$#" -ne 3 ]; then
-   # echo "Usage: $0 <pubkey_path> <rsa_id> <hex_seed>"
     echo "Usage: $0 <pubkey_path> <rsa_id> <tkey blob>"
     echo "Example: $0 /tmp/public.pem rsa-123 8c123..."
     exit 1
@@ -17,28 +14,40 @@ PUB_KEY=$1
 RSA_ID=$2
 HEX_SEED=$3
 
-# --- 3. Run the Wrapper and Capture JSON ---
-# We use grep to ignore the "Successfully loaded..." text line
-#RAW_JSON=$(./rsawrapTKEY "$PUB_KEY" "$RSA_ID" "$HEX_SEED" | grep -o '{.*}')
-ASN1PK=$(openssl pkey -pubin -in public.pem -outform DER | xxd -p -c 1000)
-WRAPPEDKEY=$(./hsmrsawrapTKEY $ASN1PK $HEX_SEED | grep -v Initia)
-RAW_JSON=$(echo "{\"keyid\":\"$RSA_ID\",\"wrappedkey\":\"$WRAPPEDKEY\"}")
+# --- 3. Prepare Wrapped Key ---
+# Convert public key to DER + hex
+ASN1PK=$(openssl pkey -pubin -in "$PUB_KEY" -outform DER | xxd -p -c 1000)
+
+# Wrap key using your HSM tool
+WRAPPEDKEY=$(./hsmrsawrapTKEY "$ASN1PK" "$HEX_SEED" | grep -v Initia)
 
 if [ -z "$WRAPPEDKEY" ]; then
-    echo "Error: rsawrapTKEY failed or produced no JSON output."
+    echo "Error: hsmrsawrapTKEY failed or produced no output."
     exit 1
 fi
 
-# --- 4. POST to Frontend ---
-echo "Uploading to $FRONTEND_URL..."
+# --- 4. Build EKMF JSON payload ---
+# Content = wrapped key
+# Metadata = JSON string with type and keyid
+EKMF_JSON=$(jq -n \
+    --arg content "$WRAPPEDKEY" \
+    --arg type "EKMFTKEY" \
+    --arg keyid "$RSA_ID" \
+    '{
+        Content: $content,
+        Signature: "",
+        Metadata: {
+            type: $type,
+            keyid: $keyid
+        }
+    }'
+)
 
-# -s: Silent (no progress bar)
-# -d @-: Reads the JSON from the pipe (stdin)
-response=$(echo "$RAW_JSON" | curl -s -X POST "$FRONTEND_URL" \
-     -H "Content-Type: application/json" \
-     -d @-)
+# --- 5. POST to Frontend ---
+#echo "Uploading EKMF command to $FRONTEND_URL..."
+response=$(echo "$EKMF_JSON" | curl -s -X POST "$FRONTEND_URL" \
+    -H "Content-Type: application/json" \
+    -d @-)
 
-# --- 5. Log Result ---
-# Append the server's response to your log file
-echo "$(date): ID=$RSA_ID - Response: $response" 
-
+# --- 6. Log Result ---
+echo "$(date): ID=$RSA_ID - Response: $response"
