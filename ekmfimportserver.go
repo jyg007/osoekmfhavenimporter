@@ -294,7 +294,7 @@ func EKMFStoreTkey(req OSODoc) error  {
     keyListMu.Lock()
     defer keyListMu.Unlock()
 
-  //  _, err = db.Exec(`DELETE FROM rsa_keys WHERE key_id = ?`, keyID)
+    _, err = db.Exec(`DELETE FROM rsa_keys WHERE key_id = ?`, keyID)
     if err != nil {
         log.Printf("Failed to delete rsa key %s: %v", keyID, err)
         return fmt.Errorf("failed to delete rsa key: %w", err)
