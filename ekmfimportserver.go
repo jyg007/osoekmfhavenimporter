@@ -124,6 +124,17 @@ func main() {
         }
         defer db.Close()
 
+           // 2️⃣ Set safe PRAGMAs immediately
+    	_, err = db.Exec(`PRAGMA journal_mode = WAL;`)
+    	if err != nil {
+        	log.Fatal(err)
+    	}
+
+    	_, err = db.Exec(`PRAGMA synchronous = FULL;`)
+    	if err != nil {
+        	log.Fatal(err)
+    	}
+
         // Reset tables for backend
         _, err = db.Exec(`DROP TABLE IF EXISTS keys;
         CREATE TABLE keys (
@@ -139,7 +150,8 @@ func main() {
         CREATE TABLE IF NOT EXISTS rsa_keys (
             key_id TEXT PRIMARY KEY,
             private_key BLOB NOT NULL
-        );`)
+        );
+        VACUUM;`)
         if err != nil {
             log.Fatal(err)
         }
