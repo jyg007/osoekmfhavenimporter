@@ -1,10 +1,17 @@
-printf '{"json_gzip_base64":"' > /tmp/payload.$1.json
-#cat /tmp/o.$1.gz.b64 >> /tmp/payload.$1.json
-cat K/keys_set.$1.gz.b64 >> /tmp/payload.$1.json
-printf '"}\n' >> /tmp/payload.$1.json
+#!/bin/bash
+FRONTEND_URL="http://localhost:8080/FrontendEKMFCmd"
 
-curl -X POST http://localhost:8080/FrontendUpload \
+UUID="ekmfimport-$(uuidgen)"
+
+printf '{"content":"' > /tmp/payload.$1.json
+
+cat K/keys_set.$1.gz.b64 >> /tmp/payload.$1.json
+
+printf '","signature":"","metadata":{"type":"EKMFKEYSIMPORT","id":"%s"}}\n' "$UUID" >> /tmp/payload.$1.json
+
+
+curl -X POST "$FRONTEND_URL" \
   -H "Content-Type: application/json" \
   --data-binary @/tmp/payload.$1.json
 
-rm /tmp/payload.$1.json
+#rm /tmp/payload.$1.json

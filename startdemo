@@ -7,9 +7,8 @@ echo "--- Select a Service to start ---"
 echo "1) ekmfoso addon frontend"
 echo "2) ekmfoso addon backend"
 echo "3) oso frontend plugin"
-echo "4) oso backend plugin"
-echo "5) sqlite"
-echo "6) crypto monitoring"
+echo "s) sqlite"
+echo "c) crypto monitoring"
 echo "q) Quit"
 echo "-------------------------------------"
 
@@ -24,11 +23,9 @@ case $choice in
         EP11_IBM_TARGET_HSM="4.16 3.16" mode=backend ./ekmfimportserver ;;
     3)
         python FrontendPlugin.py ;;
-    4)
-        python BackendPlugin.py ;;
-    5)
+    s)
         sqlite3 keys.db ;;
-    6)
+    c)
         watch -n 2 'zcryptstats -i 1 -c 1 -T -a | egrep "COUNTER|Total"' ;;
     q)
         exit 0 ;;

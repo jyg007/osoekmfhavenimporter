@@ -25,11 +25,11 @@ import (
 	"time"
 	"os"
 	"sync"
-	 "github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/google/uuid"
+	"github.com/mattn/go-sqlite3"
 	ep11 "osoekmfhavenimporter/ep11"
-    	"encoding/asn1"
-    	"encoding/pem"
+    "encoding/asn1"
+    "encoding/pem"
 )
 
 type InputKey struct {
@@ -43,6 +43,7 @@ type EKMFCmd struct {
     Signature string                 `json:"Signature"`
     Metadata  map[string]interface{} `json:"Metadata"`
 }
+
 
 func (c EKMFCmd) MetadataJSON() string {
     b, _ := json.Marshal(c.Metadata)
@@ -80,13 +81,13 @@ type Meta struct {
 var (
 	db     		     	*sql.DB
 	target      		ep11.Target_t
+	numAdapters 		int
 	wrappingKey 		[]byte
 	keyList     		[]InputKey
 	keyListMu   		sync.Mutex
-	numAdapters 		int
  	TxList      		[]OSODoc
 	ekmfCmdQueue 		[]EKMFCmd
-    queueMutex   		sync.Mutex
+    ekmfCmdQueueMutex   		sync.Mutex
 )
 
 // **************************************************************************************************************
@@ -160,8 +161,6 @@ func main() {
         // To_EKMF
 		http.HandleFunc("/BackendPostEKMFMsg", BackendEKMFMsgHandler)
         http.HandleFunc("/BackendEKMFImport", BackendProcessHandler)
-
-        // To_oso
         http.HandleFunc("/BackendGetEKMFMsgs", BackendGetCompletedHandler)
 
         fmt.Println("Backend server listening on :9080")
@@ -169,8 +168,6 @@ func main() {
     }
 
     if mode == "frontend" {
-        // EKMF Upload Msg
-        http.HandleFunc("/FrontendUpload",  FrontendUploadHandler)
         http.HandleFunc("/FrontendEKMFCmd", FrontendEKMFCmdHandler)
         // to_oso
         http.HandleFunc("/FrontendGetMsgs", FrontendGetEKMFMsgsHandler)
@@ -343,7 +340,6 @@ func EKMFStoreTkey(req OSODoc) error  {
     return nil
 }
 
-
 type Job struct {
     KeyID string
     Key   []byte
@@ -470,6 +466,9 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	if wrappingKey == nil {
 		keyList = nil
 		keyListMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("No transport keys set"))
+		log.Println("[BackendProcess] No transport key set")
 		return
 	}
 	keyListMu.Unlock()
@@ -809,51 +808,6 @@ func BackendGetCompletedHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // **************************************************************************************************************
-// UPLOAD KEYS (gzip+base64 JSON array)
-// **************************************************************************************************************
-func FrontendUploadHandler(w http.ResponseWriter, r *http.Request) {
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var payload struct {
-		JsonGzipBase64 string `json:"json_gzip_base64"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	gzipBytes, err := base64.StdEncoding.DecodeString(payload.JsonGzipBase64)
-	if err != nil {
-		http.Error(w, "Invalid base64", http.StatusBadRequest)
-		return
-	}
-
-	reader, err := gzip.NewReader(bytes.NewReader(gzipBytes))
-	if err != nil {
-		http.Error(w, "Invalid gzip", http.StatusBadRequest)
-		return
-	}
-	defer reader.Close()
-
-	var keys []InputKey
-	if err := json.NewDecoder(reader).Decode(&keys); err != nil {
-		http.Error(w, "Invalid JSON inside gzip", http.StatusBadRequest)
-		return
-	}
-
-	keyListMu.Lock()
-	keyList = append(keyList, keys...)
-	keyListMu.Unlock()
-
-	fmt.Fprintf(w, "Uploaded %d keys\n", len(keys))
-}
-
-// **************************************************************************************************************
 // **************************************************************************************************************
 func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -861,7 +815,20 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// parse keys_per_doc query parameter
+	var docs []OSODoc
+	// Process Commands Msg
+    cmds := GetAllEKMFCmd()
+
+    for _, cmd := range cmds {
+        doc, err := ProcessEKMFCmd(cmd)
+        if err != nil {
+            log.Printf("Failed: %v", err)
+        } else  {
+        	docs = append(docs, doc)
+        }
+    }
+
+    //Digest imported keys via EKMFKEYSIMPORT msg
 	keysPerDoc := 1000
 	fmt.Sscanf(r.URL.Query().Get("keys_per_doc"), "%d", &keysPerDoc)
 	if keysPerDoc <= 0 {
@@ -876,7 +843,7 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	keyListMu.Unlock()
 
 	nKeys := len(keysSnapshot)
-	var docs []OSODoc
+
 
 	for i := 0; i < nKeys; i += keysPerDoc {
 		end := i + keysPerDoc
@@ -925,25 +892,13 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-    cmds := GetAllEKMFCmd()
-
-    for _, cmd := range cmds {
-        doc, err := ProcessEKMFCmd(cmd)
-        if err != nil {
-            log.Printf("Failed: %v", err)
-        } else  {
-        	docs = append(docs, doc)
-        }
-    }
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(docs)
 }
 
-
 func GetAllEKMFCmd() []EKMFCmd {
-    queueMutex.Lock()
-    defer queueMutex.Unlock()
+    ekmfCmdQueueMutex.Lock()
+    defer ekmfCmdQueueMutex.Unlock()
 
     if len(ekmfCmdQueue) == 0 {
         return nil
@@ -972,8 +927,8 @@ func ProcessEKMFCmd(cmd EKMFCmd) (OSODoc,error) {
     	return processTransportKey(cmd)
     case "EKMFLIST":
     	return processListKeys(cmd)
-     default:
-        return OSODoc{}, fmt.Errorf("unknown type: %s", t)
+    default:
+        return OSODoc{}, fmt.Errorf("Process EKMF Cmd - Unknown type: %s", t)
     }
 }
 
@@ -1039,20 +994,52 @@ func processListKeys(cmd EKMFCmd) (OSODoc, error) {
     }, nil
 }
 
+func processKeysImport(cmd EKMFCmd) error {
+	id, ok := cmd.Metadata["id"].(string)
+    if !ok ||  id == "" {
+        return fmt.Errorf("id missing metadata")
+    }
+   	log.Printf("Processing EMKF key file upload ID: %s", id)
+
+
+    // Make sure Content is not empty
+    if cmd.Content == "" {
+        return fmt.Errorf("no content provided")
+    }
+
+	gzipBytes, err := base64.StdEncoding.DecodeString(cmd.Content)
+	if err != nil {
+		return err
+	}
+
+	reader, err := gzip.NewReader(bytes.NewReader(gzipBytes))
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	var keys []InputKey
+	if err := json.NewDecoder(reader).Decode(&keys); err != nil {
+		return fmt.Errorf("EKMF File ID %s : invalid JSON inside gzip", id)
+	}
+
+	keyListMu.Lock()
+	keyList = append(keyList, keys...)
+	keyListMu.Unlock()
+
+	return nil
+}
+
 func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "POST only", http.StatusMethodNotAllowed)
         return
     }
 
-    var req struct {
-        Content   string `json:"Content"`
-        Signature string `json:"Signature"`
-        Metadata  map[string]interface{} `json:"Metadata"`
-    }
+    var req EKMFCmd;
 
     if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+        http.Error(w, "Req Invalid JSON body", http.StatusBadRequest)
         return
     }
 
@@ -1074,26 +1061,36 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
         "EKMFGENRSAKEYPAIR": true,
         "EKMFTKEY": true,
         "EKMFLIST":   true,
+        "EKMFKEYSIMPORT":   true,
     }
 
     if !allowedTypes[t] {
-        http.Error(w, "Unknown metadata.type", http.StatusBadRequest)
+        http.Error(w, "Not allowed metadata.type", http.StatusBadRequest)
         return
     }
 
-    // Add source attribute
-    meta["source"] = "EKMF"
+    if (t == "EKMFKEYSIMPORT") {
+    	// Keys upload populates immediately the internal queue list
+		err := processKeysImport(req)
+		if err != nil {
+        	http.Error(w, "Error processing importfile", http.StatusBadRequest)
+        	return
+    	}
+    } else {
+	    // Add source attribute
+	    meta["source"] = "EKMF"
 
-    cmd := EKMFCmd{
-        Content:   req.Content,
-        Signature: req.Signature,
-        Metadata:  meta,
+	    cmd := EKMFCmd{
+	        Content:   req.Content,
+	        Signature: req.Signature,
+	        Metadata:  meta,
+	    }
+
+	    // Store in global queue
+	    ekmfCmdQueueMutex.Lock()
+	    ekmfCmdQueue = append(ekmfCmdQueue, cmd)
+	    ekmfCmdQueueMutex.Unlock()    	
     }
-
-    // Store in global queue
-    queueMutex.Lock()
-    ekmfCmdQueue = append(ekmfCmdQueue, cmd)
-    queueMutex.Unlock()
 
     w.Header().Set("Content-Type", "application/json")
     w.Write([]byte(`{"status":"queued"}`))

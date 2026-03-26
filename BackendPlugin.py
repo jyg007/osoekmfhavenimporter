@@ -14,9 +14,6 @@ BACKUP_FILE = "INPUTBRIGDEOSMSGS.bak"
 OUTPUT_FILE = "OUTPUTBRIDGEMSGS"
 SERVER_URL = "http://localhost:9080"
 MAX_LOG_LEN = 80  # maximum characters of content to log
-INTERVAL = 5
-
-ekmf_has_keys_import = False
 
 def to_oso():
    
@@ -100,9 +97,9 @@ def to_ekmf():
                         headers={"Content-Type": "application/json"},
                     )
                     if response.status_code == 204:
-                        logging.info(f"Successfully processed ID: {doc_id}")
+                        logging.info(f"Successfully processed EKMF msg: {doc_id}")
                     else:
-                        logging.warning(f"Backend returned error for ID {doc_id}: {response.status_code} - {response.text}")
+                        logging.warning(f"Backend returned error for EKMF ID {doc_id}: {response.status_code} - {response.text}")
                 except requests.exceptions.RequestException as e:
                     logging.error(f"Network error for ID {doc_id}: {e}")
 
@@ -125,12 +122,6 @@ def to_ekmf():
 
              
 if __name__ == "__main__":
-    logging.info(f"OSO backend plugin started. Polling every {INTERVAL}s...")
-    try:
-        while True:  
-            ekmf_has_keys_import = False
-            to_ekmf()
-            to_oso()
-            time.sleep(INTERVAL)
-    except KeyboardInterrupt:
-        logging.info("Service stopped manually.")
+    logging.info(f"OSO backend plugin started")
+    to_ekmf()
+    to_oso()

@@ -130,12 +130,7 @@ then
 	r)
 		echo "OSO Iteration started"
    		./OSO_StartIteration.sh
-		for in in 1 2 3 4 5
-		do 
-			sleep 1
-			echo -n "."
-		done
-		echo "OSO done"
+		echo "Completed"
 	;;
 	0) 
 		echo "Exiting OSO Terminal"
