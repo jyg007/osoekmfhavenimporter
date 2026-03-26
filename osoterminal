@@ -132,6 +132,9 @@ then
    		./OSO_StartIteration.sh
 		echo "Completed"
 	;;
+	C)
+		./EKMF_List.sh
+	;;
 	0) 
 		echo "Exiting OSO Terminal"
 		break

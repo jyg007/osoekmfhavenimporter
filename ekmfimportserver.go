@@ -26,10 +26,11 @@ import (
 	"os"
 	"sync"
 	"github.com/google/uuid"
-	"github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 	ep11 "osoekmfhavenimporter/ep11"
     "encoding/asn1"
     "encoding/pem"
+     "sync/atomic"
 )
 
 type InputKey struct {
@@ -88,6 +89,7 @@ var (
  	TxList      		[]OSODoc
 	ekmfCmdQueue 		[]EKMFCmd
     ekmfCmdQueueMutex   		sync.Mutex
+    processed uint64
 )
 
 // **************************************************************************************************************
@@ -375,6 +377,7 @@ func workercenc0(jobs <-chan Job, results chan<- Result, wg *sync.WaitGroup) {
     for j := range jobs {
         cenc0 := computeCENC0(j.Key)
         results <- Result{KeyID: j.KeyID, Cenc0: cenc0}
+         atomic.AddUint64(&processed, 1)
     }
 }
 
@@ -387,6 +390,30 @@ func EKMFCenc0(doc OSODoc) error {
     results := make(chan Result, 20000)
 
     var wg sync.WaitGroup
+
+    // --- performance timer ---
+    processed = 0
+    start := time.Now()
+
+  	done := make(chan struct{})
+
+	go func() {
+	    ticker := time.NewTicker(1 * time.Second)
+	    defer ticker.Stop()
+
+	    for {
+	        select {
+	        case <-ticker.C:
+	            n := atomic.LoadUint64(&processed)
+	            elapsed := time.Since(start).Seconds()
+	            if elapsed > 0 {
+	                log.Printf("[CENC0] processed=%d speed=%.0f keys/sec", n, float64(n)/elapsed)
+	            }
+	        case <-done:
+	            return
+	        }
+	    }
+	}()
 
     // Start workers
     for i := 0; i < workers; i++ {
@@ -425,7 +452,17 @@ func EKMFCenc0(doc OSODoc) error {
     wg.Wait()
     close(results)
     collectorWG.Wait()
+    close(done)
 
+	total := atomic.LoadUint64(&processed)
+    elapsed := time.Since(start).Seconds()
+
+    log.Printf("[CENC0] DONE total=%d time=%.2fs speed=%.0f keys/sec workers=%d",
+        total,
+        elapsed,
+        float64(total)/elapsed,
+        workers,
+    )
     log.Println("[CENC0] Total keys processed:", len(resultList))
 
     // --- Metadata ---
