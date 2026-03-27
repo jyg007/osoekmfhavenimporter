@@ -106,7 +106,7 @@ def to_ekmf():
     ########################################################################################
     # --- Final Trigger Call ---
     try:
-       final_resp = requests.post(f"{SERVER_URL}/BackendEKMFImport?batch_size=20000")
+       final_resp = requests.post(f"{SERVER_URL}/BackendEKMFProcess?batch_size=20000")
        # Check response status and log reason if failed
        if final_resp.status_code >= 400:
            logging.error(

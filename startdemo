@@ -2,6 +2,13 @@
 
 #!/bin/bash
 
+if [[ ! -f K/senderpublic.pem ]]
+then
+	echo "Creating sender private key"
+	openssl genpkey -algorithm Ed25519 -out K/senderprivate.key
+	openssl pkey -in K/senderprivate.key -pubout -out K/senderpublic.pem
+fi
+
 clear
 echo "--- Select a Service to start ---"
 echo "1) ekmfoso addon frontend"
@@ -18,8 +25,11 @@ echo "" # Just to move to a new line after the keypress
 
 case $choice in
     1)
-        mode=frontend ./ekmfimportserver ;;
+	export ED25519_PUBLIC_KEY=$(openssl pkey -pubin -in K/senderpublic.pem -pubout -outform DER | base64 -w0)
+       # ED25519_PUBLIC_KEY=$(base64 -w0 K/senderpublic.pem) 
+	mode=frontend ./ekmfimportserver ;;
     2)
+
         EP11_IBM_TARGET_HSM="4.16 3.16" mode=backend ./ekmfimportserver ;;
     3)
         python FrontendPlugin.py ;;

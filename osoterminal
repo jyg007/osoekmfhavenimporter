@@ -117,7 +117,8 @@ then
 	3) 
 #		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"
 		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 "
-		for i in $LIST; do echo "Upload $i started" && bash ./EKMF_SendKeys.sh $i & done
+		#LIST="1"
+		for i in $LIST; do echo "Upload $i started" && bash ./EKMF_SendKeys.sh $i ; done
 		wait
 		echo "All uploads finished ✅"
 	;;
@@ -133,7 +134,13 @@ then
 		echo "Completed"
 	;;
 	C)
-		./EKMF_List.sh
+		./EKMF_List.sh EKMFLIST
+	;;
+	z)
+		./EKMF_List.sh EKMFROTATE
+	;;
+	Z)
+		./EKMF_List.sh EKMFACTIVATEROTATION
 	;;
 	0) 
 		echo "Exiting OSO Terminal"

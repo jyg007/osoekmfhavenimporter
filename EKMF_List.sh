@@ -1,11 +1,13 @@
 #curl -X POST http://localhost:8080/FrontendCreateRSAKeyPairRequest
 
+cmd=$1
+
 EKMF_JSON=$(cat <<EOF
 {
   "Content": "",
   "Signature": "",
   "Metadata": {
-    "type": "EKMFLIST"
+    "type": "$1"
   }
 }
 EOF
