@@ -67,7 +67,7 @@ type ProcessResult struct {
 
 type OSODoc struct {
 	ID        string      `json:"id"`        // document index / uuid
-	Content   string      `json:"content"`   // gzipped base64 JSON array of keys
+	Content   string      `json:"content"`   
 	Signature string      `json:"signature"` // empty for now
 	Metadata  string       `json:"metadata"`  // static info
 }
@@ -129,24 +129,52 @@ func main() {
         if err != nil {
             panic(err)
         }
-        defer func() {
-	        // 1. Force a checkpoint to move data to the main .db file
-    	    // 2. Change mode to DELETE to remove the -wal file
-        	_, _ = db.Exec("PRAGMA journal_mode = DELETE;")
-        	db.Close()
-        	log.Println("Database cleaned and closed.")
-    	}()
-        
-           // 2️⃣ Set safe PRAGMAs immediately
-    	_, err = db.Exec(`PRAGMA journal_mode = WAL;`)
-    	if err != nil {
-        	log.Fatal(err)
-    	}
 
-    	_, err = db.Exec(`PRAGMA synchronous = FULL;`)
-    	if err != nil {
-        	log.Fatal(err)
-    	}
+		// Close cleanly
+		defer func() {
+		    // 1. Force checkpoint so WAL is merged into keys.db
+		    _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+		    if err != nil {
+		        log.Printf("checkpoint error: %v", err)
+		    }
+
+		    // 2. Switch back to DELETE mode so the -wal file disappears
+		    _, err = db.Exec(`PRAGMA journal_mode = DELETE;`)
+		    if err != nil {
+		        log.Printf("journal mode reset error: %v", err)
+		    }
+
+		    err = db.Close()
+		    if err != nil {
+		        log.Printf("close error: %v", err)
+		    }
+
+		    log.Println("Database cleaned and closed.")
+			}()
+        
+        // WAL mode (fast + safe for many inserts)
+		_, err = db.Exec(`PRAGMA journal_mode = WAL;`)
+		if err != nil {
+		    log.Fatal(err)
+		}
+
+		// Much faster than FULL when importing thousands of keys
+		_, err = db.Exec(`PRAGMA synchronous = NORMAL;`)
+		if err != nil {
+		    log.Fatal(err)
+		}
+
+		// Avoid disk-full errors caused by temp files
+		_, err = db.Exec(`PRAGMA temp_store = MEMORY;`)
+		if err != nil {
+		    log.Fatal(err)
+		}
+
+		// Auto-shrink WAL regularly
+		_, err = db.Exec(`PRAGMA wal_autocheckpoint = 1000;`)
+		if err != nil {
+		    log.Fatal(err)
+		}
 
         // Reset tables for backend
  		// _, err = db.Exec(`DROP TABLE IF EXISTS keys;
@@ -796,29 +824,83 @@ func ActivateRotation(req OSODoc) error {
     return nil
 }
 
-type Operation int
-
-const (
-    OpCENC0 Operation = iota
-    OpRotate
-    OpActivateRotate
-)
-
 type Job struct {
     KeyID string
     Key   []byte
     TargetIndex int
-    Op    Operation
 }
 
 type Result struct {
     KeyID string
     Value string
-    Op    Operation
 }
 
 type Processor func(j Job) (Result, error)
 
+// --- dedicated SQLite update worker ---
+type UpdateJob struct {
+	KeyID  string
+	NewKey []byte
+}
+
+// Update worker thread to process sqlite update
+func updateWorker(db *sql.DB, updateChan <-chan UpdateJob, done chan struct{}) {
+	const batchSize = 50000
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Fatalf("updateWorker: begin transaction failed: %v", err)
+	}
+
+	stmt, err := tx.Prepare(`UPDATE keys SET new_key = ? WHERE key_id = ?`)
+	if err != nil {
+		log.Fatalf("updateWorker: prepare failed: %v", err)
+	}
+	defer stmt.Close()
+
+	count := 0
+
+	for u := range updateChan {
+		_, err := stmt.Exec(u.NewKey, u.KeyID)
+		if err != nil {
+			log.Printf("updateWorker: failed to update new_key for %s: %v", u.KeyID, err)
+			continue
+		}
+
+		count++
+
+		// commit and checkpoint every batch
+		if count%batchSize == 0 {
+			if err := tx.Commit(); err != nil {
+				log.Printf("updateWorker: commit failed: %v", err)
+			}
+			if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
+				log.Printf("updateWorker: checkpoint failed: %v", err)
+			}
+
+			tx, err = db.Begin()
+			if err != nil {
+				log.Fatalf("updateWorker: new transaction failed: %v", err)
+			}
+			stmt, err = tx.Prepare(`UPDATE keys SET new_key = ? WHERE key_id = ?`)
+			if err != nil {
+				log.Fatalf("updateWorker: prepare failed: %v", err)
+			}
+		}
+	}
+
+	// commit any remaining updates
+	if err := tx.Commit(); err != nil {
+		log.Printf("updateWorker: final commit failed: %v", err)
+	}
+
+ 	// final checkpoint
+    _, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+	// signal done
+	close(done)
+}
+
+// worker jobs for processing keys as defined in Processor function
 func worker2(jobs <-chan Job, results chan<- Result, wg *sync.WaitGroup, p Processor) {
     defer wg.Done()
 
@@ -835,8 +917,9 @@ func worker2(jobs <-chan Job, results chan<- Result, wg *sync.WaitGroup, p Proce
     }
 }
 
-
 var targets []ep11.Target_t
+
+//CENC0 Checksum processor
 func processCENC0(j Job) (Result, error) {
     t := targets[j.TargetIndex]
     // 16-byte zero block (AES block size)
@@ -856,11 +939,11 @@ func processCENC0(j Job) (Result, error) {
     return Result{
         KeyID: j.KeyID,
         Value: hex.EncodeToString(cipher[:3]),
-        Op:   OpCENC0,
     }, nil
 }
 
-func processRotate(j Job) (Result, error) {
+// mek rotation processor
+func processRotate(j Job,updateChan chan<- UpdateJob) (Result, error) {
 	t := targets[j.TargetIndex]
     // --- re-encipher the key ---
     reenciphered, err := ep11.Reencipher(t, j.Key)
@@ -869,84 +952,83 @@ func processRotate(j Job) (Result, error) {
         return Result{
         	KeyID: j.KeyID,
         	Value: "failed", // can return cenc0 or other metadata
-        	Op:    OpRotate,
-    	}, nil
+     	}, nil
     }
 
     // --- store in SQLite in new_key column ---
-    _, err = db.Exec(`UPDATE keys SET new_key = ? WHERE key_id = ?`, reenciphered, j.KeyID)
-    if err != nil {
-    	log.Printf("failed to update new_key for %s: %w", j.KeyID, err)
-    	return Result{
-        	KeyID: j.KeyID,
-        	Value: "failed", // can return cenc0 or other metadata
-        	Op:    OpRotate,
-    	}, nil
-    }
+	updateChan <- UpdateJob{
+		KeyID:  j.KeyID,
+		NewKey: reenciphered,
+	}
 
     return Result{
         KeyID: j.KeyID,
         Value: "success", // can return cenc0 or other metadata
-        Op:    OpRotate,
     }, nil
 }
 
-func ProcessEKMFMessage(doc OSODoc,  Type string) error {
+func ProcessEKMFMessage(doc OSODoc, Type string) error {
+	workers := 8 * numAdapters
 
-    workers := 8 * numAdapters
+	jobs := make(chan Job, 20000)
+	results := make(chan Result, 20000)
 
-    jobs := make(chan Job, 20000)
-    results := make(chan Result, 20000)
+	var processor Processor
 
-    var processor Processor
+	// --- Dedicated SQLite update worker ---
+	updateChan := make(chan UpdateJob, 1000)
+	updateDone := make(chan struct{})
 
-    // --- Select operation ---
-    switch Type {
+	// --- Select operation ---
+	switch Type {
+	case "EKMFLIST":
+		processor = processCENC0
+		targets = []ep11.Target_t{target}
 
-    case "EKMFLIST":
-        processor = processCENC0
-        targets = []ep11.Target_t{ target } 
+	case "EKMFROTATE":
+		processor = func(j Job) (Result, error) {
+			return processRotate(j, updateChan)
+		}
+		targets = targets_single
 
-    case "EKMFROTATE":
-        processor = processRotate
-       	targets = targets_single
+	default:
+		return fmt.Errorf("unsupported EKMF message type: %s", Type)
+	}
 
-    default:
-        return fmt.Errorf("unsupported EKMF message type: %s", Type)
-    }
+	// --- start SQLite writer ---
+    go updateWorker(db, updateChan, updateDone)
+	// --- performance timer ---
+	processed = 0
+	start := time.Now()
+	done := make(chan struct{})
 
-    // --- performance timer ---
-    processed = 0
-    start := time.Now()
+	// --- per-second speed logger ---
+	go func() {
+	    ticker := time.NewTicker(1 * time.Second)
+	    defer ticker.Stop()
 
-    done := make(chan struct{})
+	    for {
+	        select {
+	        case <-ticker.C:
+	            n := atomic.LoadUint64(&processed)
+	            elapsed := time.Since(start).Seconds()
+	            if elapsed > 0 {
+	                log.Printf("[EKMF %s] processed=%d speed=%.0f keys/sec", Type, n, float64(n)/elapsed)
+	            }
+	        case <-done:
+	            return
+	        }
+	    }
+	}()
 
-    go func() {
-        ticker := time.NewTicker(1 * time.Second)
-        defer ticker.Stop()
+	// --- start workers ---
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go worker2(jobs, results, &wg, processor)
+	}
 
-        for {
-            select {
-            case <-ticker.C:
-                n := atomic.LoadUint64(&processed)
-                elapsed := time.Since(start).Seconds()
-                if elapsed > 0 {
-                    log.Printf("[EKMF] processed=%d speed=%.0f keys/sec", n, float64(n)/elapsed)
-                }
-            case <-done:
-                return
-            }
-        }
-    }()
-
-    // --- start workers ---
-    var wg sync.WaitGroup
-    for i := 0; i < workers; i++ {
-        wg.Add(1)
-        go worker2(jobs, results, &wg, processor)
-    }
-
-    // --- result collector ---
+    // --- result collector (this was missing) ---
     var resultList []Result
     var collectorWG sync.WaitGroup
     collectorWG.Add(1)
@@ -958,84 +1040,88 @@ func ProcessEKMFMessage(doc OSODoc,  Type string) error {
         }
     }()
 
-	var rows *sql.Rows
-	var err error
-    if Type == "EKMFROTATE" {
-    rows, err = db.Query(`
+	 // --- fetch rows ---
+    rows, err := db.Query(`
         SELECT key_id, key
         FROM keys
-        WHERE scheme='SEED'
-        AND new_key IS NULL
-    `)
+        WHERE scheme='SEED' AND (new_key IS NULL OR ? = 'EKMFLIST')
+    `, Type)
+
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// --- assign targets round-robin ---
+	if len(targets) == 1 {
+		for rows.Next() {
+			var j Job
+			if err := rows.Scan(&j.KeyID, &j.Key); err != nil {
+				return err
+			}
+			j.TargetIndex = 0
+			jobs <- j
+		}
 	} else {
-    rows, err = db.Query(`
-        SELECT key_id, key
-        FROM keys
-        WHERE scheme='SEED'
-    `)
-}
-    if err != nil {
-        return err
-    }
-    defer rows.Close()
-
-    for rows.Next() {
-        var j Job
-        if err := rows.Scan(&j.KeyID, &j.Key); err != nil {
-            return err
-        }
- 		// One job per target
-        for i := range targets {
-        	j.TargetIndex = i
-            jobs <- j
+		targetIndex := 0
+		for rows.Next() {
+			var j Job
+			if err := rows.Scan(&j.KeyID, &j.Key); err != nil {
+				return err
+			}
+			j.TargetIndex = targetIndex
+			jobs <- j
+			
+			targetIndex++
+            if targetIndex == len(targets) {
+                targetIndex = 0
             }
-        //j.Op = op
-        //jobs <- j
-    }
+		}
+	}
 
-    close(jobs)
-    wg.Wait()
-    close(results)
-    collectorWG.Wait()
-    close(done)
+	close(jobs)
+	wg.Wait()         // wait for all workers to finish
+	close(results)
+	collectorWG.Wait()
 
-    total := atomic.LoadUint64(&processed)
-    elapsed := time.Since(start).Seconds()
+	// --- wait for SQLite update ---
+	close(updateChan)
+	<-updateDone
 
-    log.Printf("[EKMF] DONE type=%s total=%d time=%.2fs speed=%.0f keys/sec workers=%d",
-	    Type,        // <-- add the type here
-	    total,
-	    elapsed,
-	    float64(total)/elapsed,
-	    workers,
+	// stop ticker
+	close(done)
+
+	// --- prepare final message ---
+	jsonArray := make([]map[string]string, 0, len(resultList))
+	for _, r := range resultList {
+	    jsonArray = append(jsonArray, map[string]string{
+	        "KeyID": r.KeyID,
+	        "Value": r.Value,
+	    })
+	}
+
+	finalJSON, err := json.Marshal(jsonArray)
+	if err != nil {
+	    log.Printf("failed to marshal results: %v", err)
+	} else {
+	    // reuse the incoming doc
+	    doc.Content = string(finalJSON)
+	    doc.Metadata = Type + " results"
+	    TxList = append(TxList, doc)
+	}
+
+	total := atomic.LoadUint64(&processed)
+	elapsed := time.Since(start).Seconds()
+
+	log.Printf("[EKMF] DONE type=%s total=%d time=%.2fs speed=%.0f keys/sec workers=%d",
+		Type,
+		total,
+		elapsed,
+		float64(total)/elapsed,
+		workers,
 	)
 
-    // --- metadata ---
-    metaResp := map[string]string{
-        "type":   Type,
-        "source": "EKMF",
-    }
-
-    metaRespJSON, err := json.Marshal(metaResp)
-    if err != nil {
-        return err
-    }
-
-    contentJSON, err := json.Marshal(resultList)
-    if err != nil {
-        return err
-    }
-
-    resp := OSODoc{
-        ID:        doc.ID,
-        Content:   string(contentJSON),
-        Signature: "",
-        Metadata:  string(metaRespJSON),
-    }
-
-    TxList = append(TxList, resp)
-
-    return nil
+	return nil
 }
 
 
@@ -1220,45 +1306,75 @@ func batchWriter(results <-chan ProcessedKey, wg *sync.WaitGroup, successCount *
 
 	tx, err := db.Begin()
 	if err != nil {
+		log.Printf("batchWriter: begin transaction failed: %v", err)
 		return
 	}
 
 	stmt, err := tx.Prepare("INSERT OR REPLACE INTO keys(key_id,key,scheme) VALUES(?,?,?)")
 	if err != nil {
+		log.Printf("batchWriter: prepare failed: %v", err)
 		return
 	}
 	defer stmt.Close()
 
 	count := 0
 
-        batchSize := 50000
-        startTime := time.Now()
-        lastLogTime := startTime
-        lastLogCount := 0
-    
-        for r := range results {
-            _, err := stmt.Exec(r.KeyID, r.Key, r.Scheme)
-            if err != nil {
-                log.Printf("batchWriter: failed to insert key %s: %v", r.KeyID, err)
-                continue
-            }
-    
-            count++
-    
-            // Log every 50k keys
-            if count%batchSize == 0 {
-                now := time.Now()
-                elapsed := now.Sub(lastLogTime).Seconds()
-                totalElapsed := now.Sub(startTime).Seconds()
-                batchProcessed := count - lastLogCount
-                speed := float64(batchProcessed) / elapsed
-                log.Printf("[batchWriter] Processed %d keys (batch %d), batch time %.2fs, batch speed %.2f keys/sec, total time %.2fs",
-                    count, count/batchSize, elapsed, speed, totalElapsed)
-                lastLogTime = now
-                lastLogCount = count
-            }
-        }
-	tx.Commit()
+	batchSize := 50000
+	startTime := time.Now()
+	lastLogTime := startTime
+	lastLogCount := 0
+
+	for r := range results {
+		_, err := stmt.Exec(r.KeyID, r.Key, r.Scheme)
+		if err != nil {
+			log.Printf("batchWriter: failed to insert key %s: %v", r.KeyID, err)
+			continue
+		}
+
+		count++
+
+		// --- checkpoint every batchSize keys ---
+		if count%batchSize == 0 {
+			// Commit current transaction to reduce WAL growth
+			if err := tx.Commit(); err != nil {
+				log.Printf("batchWriter: commit failed: %v", err)
+			}
+
+			// WAL checkpoint
+			if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
+				log.Printf("batchWriter: checkpoint failed: %v", err)
+			}
+
+			// Start a new transaction for the next batch
+			tx, err = db.Begin()
+			if err != nil {
+				log.Printf("batchWriter: new transaction failed: %v", err)
+				return
+			}
+			stmt, err = tx.Prepare("INSERT OR REPLACE INTO keys(key_id,key,scheme) VALUES(?,?,?)")
+			if err != nil {
+				log.Printf("batchWriter: prepare failed: %v", err)
+				return
+			}
+
+			// Log progress
+			now := time.Now()
+			elapsed := now.Sub(lastLogTime).Seconds()
+			totalElapsed := now.Sub(startTime).Seconds()
+			batchProcessed := count - lastLogCount
+			speed := float64(batchProcessed) / elapsed
+			log.Printf("[batchWriter] Processed %d keys (batch %d), batch time %.2fs, batch speed %.2f keys/sec, total time %.2fs",
+				count, count/batchSize, elapsed, speed, totalElapsed)
+			lastLogTime = now
+			lastLogCount = count
+		}
+	}
+
+	// Commit any remaining keys
+	if err := tx.Commit(); err != nil {
+		log.Printf("batchWriter: final commit failed: %v", err)
+	}
+
 	*successCount = count
 }
 

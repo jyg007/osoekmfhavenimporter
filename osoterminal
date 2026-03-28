@@ -15,6 +15,7 @@ FG_GREEN="$(tput setaf 2)"
 FG_WHITE="$(tput setaf 7)"
 FG_CYAN="$(tput setaf 6)"
 TOP=10
+echo "" > INPUTQUEUEMSGS
 
 
 
