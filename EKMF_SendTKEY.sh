@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # --- 1. Configuration ---
-FRONTEND_URL="http://localhost:8080/FrontendEKMFCmd"
+#FRONTEND_URL="http://localhost:8080/FrontendEKMFCmd"
+FRONTEND_URL="https://localhost:4433/payload/oso1"
 
 # --- 2. Check for Arguments ---
 if [ "$#" -ne 3 ]; then
@@ -45,7 +46,8 @@ EKMF_JSON=$(jq -n \
 
 # --- 5. POST to Frontend ---
 #echo "Uploading EKMF command to $FRONTEND_URL..."
-response=$(echo "$EKMF_JSON" | curl -s -X POST "$FRONTEND_URL" \
+#response=$(echo "$EKMF_JSON" | curl -s -X POST "$FRONTEND_URL" \
+response=$(echo "$EKMF_JSON" | curl -k -s --cert certs/client.crt --key certs/client.key -X POST "$FRONTEND_URL" \
     -H "Content-Type: application/json" \
     -d @-)
 

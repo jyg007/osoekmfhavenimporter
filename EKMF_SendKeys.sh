@@ -1,4 +1,5 @@
 FRONTEND_URL="http://localhost:8080/FrontendEKMFCmd"
+FRONTEND_URL="https://localhost:4433/payload/oso1"
 CONTENT_FILE="K/keys_set.$1.gz.b64"
 UUID="ekmfimport-$(uuidgen)"
 
@@ -23,7 +24,7 @@ cat <<EOF > /tmp/payload.$1.json
 }
 EOF
 
-curl -X POST "$FRONTEND_URL" \
+curl -sk --cert certs/client.crt --key certs/client.key -X POST "$FRONTEND_URL" \
   -H "Content-Type: application/json" \
   --data-binary @/tmp/payload.$1.json
 

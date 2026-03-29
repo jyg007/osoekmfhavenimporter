@@ -30,6 +30,8 @@ import (
     "crypto/ed25519"
     "crypto/x509"
     "strings"
+    "crypto/tls"
+    "io"
 )
 
 type InputKey struct {
@@ -324,6 +326,10 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetAllEKMFCmd() []EKMFCmd {
+
+	//contact the remote server EKMFQ
+	GetEKMFQMsg()
+
     ekmfCmdQueueMutex.Lock()
     defer ekmfCmdQueueMutex.Unlock()
 
@@ -469,35 +475,90 @@ func processKeysImport(cmd EKMFCmd) error {
 //**************************************************************************************************
 //**************************************************************************************************
 
-func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
-
-	verifySignature := func(content string, signatureB64 string) error {
-
-		envB64 := os.Getenv("ED25519_PUBLIC_KEY")
-		derBytes, err := base64.StdEncoding.DecodeString(envB64)
-		if err != nil {
-		    log.Fatalf("Base64 decode failed: %v", err)
-		}
-
-		pubKeyInterface, err := x509.ParsePKIXPublicKey(derBytes)
-		if err != nil {
-		    log.Fatalf("Parse public key failed: %v", err)
-		}
-
-		edPubKey, ok := pubKeyInterface.(ed25519.PublicKey)
-		if !ok {
-		    log.Fatalf("Not an Ed25519 key")
-		}
-	    // 5. Decode signature and verify
-	    sig, _ := base64.StdEncoding.DecodeString(signatureB64)
-
-	    if !ed25519.Verify(edPubKey, []byte(content), sig) {
-	        return fmt.Errorf("signature invalid")
-	    }
-
-	    return nil
+func GetEKMFQMsg() {
+	// --- 1. Get OSO1 from environment ---
+	queue := os.Getenv("OSONAME")
+	if queue == "" {
+		fmt.Println("OSONAME environment variable not set")
+		return
 	}
 
+	// --- 2. Get client cert, key, and CA from environment ---
+	clientCertB64 := os.Getenv("CLIENTCERT")
+	clientKeyB64 := os.Getenv("CLIENTKEY")
+	caCertB64 := os.Getenv("CACERT")
+
+	if clientCertB64 == "" || clientKeyB64 == "" {
+		fmt.Println("CLIENTCERT or CLIENTKEY environment variable not set")
+		return
+	}
+
+	// --- 3. Decode client cert and key ---
+	clientCertPEM, err := base64.StdEncoding.DecodeString(clientCertB64)
+	if err != nil {
+		panic(err)
+	}
+	clientKeyPEM, err := base64.StdEncoding.DecodeString(clientKeyB64)
+	if err != nil {
+		panic(err)
+	}
+
+	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil {
+		panic(err)
+	}
+
+	// --- 4. Prepare CA pool (optional, only if CACERT provided) ---
+	var caCertPool *x509.CertPool
+	if caCertB64 != "" {
+		caCertPEM, err := base64.StdEncoding.DecodeString(caCertB64)
+		if err != nil {
+			panic(err)
+		}
+		caCertPool = x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			panic("failed to append CA certificate")
+		}
+	}
+
+	// --- 5. Create HTTPS client with TLS config ---
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: true, // mimic curl -k
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	// --- 6. Make GET request ---
+	url := fmt.Sprintf("https://localhost:4433/payload/%s", queue)
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("[GET EKFMQ] Connection error for queue: %v", err)
+		return
+	}	
+	defer resp.Body.Close()
+
+	// --- Decode JSON array directly from response body ---
+	var cmds []EKMFCmd
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &cmds); err != nil {
+		log.Printf("[GET EKMFQ] unable to marshall EKMF cmd %v", err)
+		return
+	}
+
+	// --- Call FrontendEKMFCmd for each command ---
+	for _, cmd := range cmds {
+		EKMFCmdValidation(cmd)
+	}
+}
+
+
+func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
 
     if r.Method != http.MethodPost {
         http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -511,17 +572,54 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    EKMFCmdValidation(req)
+}
+
+func EKMFCmdValidation(req EKMFCmd)  {
+	verifySignature := func(content string, signatureB64 string) error {
+
+		envB64 := os.Getenv("ED25519_PUBLIC_KEY")
+		derBytes, err := base64.StdEncoding.DecodeString(envB64)
+		if err != nil {
+		    log.Printf("Base64 decode failed: %v", err)
+		    return err
+		}
+
+		pubKeyInterface, err := x509.ParsePKIXPublicKey(derBytes)
+		if err != nil {
+		    log.Printf("Parse public key failed: %v", err)
+		    return err
+		}
+
+		edPubKey, ok := pubKeyInterface.(ed25519.PublicKey)
+		if !ok {
+		    log.Printf("Not an Ed25519 key")
+		    return err
+		}
+	    // 5. Decode signature and verify
+	    sig, _ := base64.StdEncoding.DecodeString(signatureB64)
+
+	    if !ed25519.Verify(edPubKey, []byte(content), sig) {
+	        log.Printf("signature invalid")
+	        return err
+	    }
+
+	    return nil
+	}
+
    // Metadata is already a map[string]interface{}
     meta := req.Metadata
     if meta == nil {
-        http.Error(w, "Metadata missing", http.StatusBadRequest)
+    	log.Printf("EKMF Cmd: Metadata missing")
+ //       http.Error(w, "Metadata missing", http.StatusBadRequest)
         return
     }
 
     // Validate "type"
     t, ok := meta["type"].(string)
     if !ok || t == "" {
-        http.Error(w, "Metadata.type missing", http.StatusBadRequest)
+    	log.Printf("EKMF Cmd: Metadata type missing")
+ //       http.Error(w, "Metadata.type missing", http.StatusBadRequest)
         return
     }
 
@@ -535,7 +633,8 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     if !allowedTypes[t] {
-        http.Error(w, "Not allowed metadata.type", http.StatusBadRequest)
+ //       http.Error(w, "Not allowed metadata.type", http.StatusBadRequest)
+ 		log.Printf("EKMF Cmd: Not allowed metadata.type")
         return
     }
 
@@ -546,13 +645,14 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
 	// If this command requires a signature → verify it
 	if commandsRequiringSignature[t] {
 	    if req.Signature == "" {
-	        http.Error(w, "Signature required for this command", http.StatusUnauthorized)
+	    	log.Printf("EKMF Cmd: Signature required for type %s",t)
+//	        http.Error(w, "Signature required for this command", http.StatusUnauthorized)
 	        return
 	    }
 
 	    if err := verifySignature(req.Content, req.Signature); err != nil {
 	        log.Printf("Invalid signature received for message type %s", t)
-            http.Error(w, fmt.Sprintf("Signature verification failed: %v", err), http.StatusUnauthorized)
+ //           http.Error(w, fmt.Sprintf("Signature verification failed: %v", err), http.StatusUnauthorized)
 	        return
 	    }
 	}
@@ -561,7 +661,8 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
     	// Keys upload populates immediately the internal queue list
 		err := processKeysImport(req)
 		if err != nil {
-        	http.Error(w, "Error processing importfile", http.StatusBadRequest)
+			log.Printf("Error processing importfile")
+ //       	http.Error(w, "Error processing importfile", http.StatusBadRequest)
         	return
     	}
     } else {
@@ -580,8 +681,8 @@ func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
 	    ekmfCmdQueueMutex.Unlock()    	
     }
 
-    w.Header().Set("Content-Type", "application/json")
-    w.Write([]byte(`{"status":"queued"}`))
+  //  w.Header().Set("Content-Type", "application/json")
+ //   w.Write([]byte(`{"status":"queued"}`))
 }
 
 
