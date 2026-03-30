@@ -29,14 +29,12 @@ _EOF_
    echo -n ${BG_BLACK}${FG_WHITE}
 cat <<- _EOF_
    1. Request OSO RSA Key Pair                             4. OSO PreConfirmation Queue
-                                                           i. OSO PreConfirmation msg ids
-   n. Create a new transport key                          
-   g. Generate new seeds                                   5. OSO PostConfirmation Queue
+     n. Create a new transport key                         i. OSO PreConfirmation msg ids
+     g. Generate new seeds                                 5. OSO PostConfirmation Queue
 
-   2. Upload a transport key  		                   6. Key Import Result
+   2. Upload a transport key  		                   
    3. Upload in OSO wrapped EKMF seeds                     r. Start OSO iteration                                   
-   0. Quit
-
+   6. Get EKMF Msgs                                        0. Quit
 _EOF_
 
    tput cup $TOP 0
@@ -76,7 +74,8 @@ then
 		./OSOQueue.py pre | jq -r .documents[].id | xargs
 	;;
 	2) 
-		R=$(./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type == "EKMFRSAIMPORT") | (.metadata | fromjson).keyid')
+		#R=$(./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type == "EKMFRSAIMPORT") | (.metadata | fromjson).keyid')
+		R=$(cat Q.json |  jq -r '.data[] | select((.metadata|fromjson).type=="EKMFRSAIMPORT") | (.metadata|fromjson).keyid')
 		# If R is empty → read it from RSAID
 		if [ -z "$R" ]; then
 		    if [ -f RSAID ]; then
@@ -88,7 +87,8 @@ then
 		else
 		    # If R exists → store it
 		    printf "%s" "$R" > RSAID
-		    ./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type=="EKMFRSAIMPORT") | .content' > public.pem 
+#		    ./OSOQueue.py post | jq -r '.documents[0] | select((.metadata | fromjson).type=="EKMFRSAIMPORT") | .content' > public.pem 
+		    cat Q.json | jq -r '.data[] | select((.metadata | fromjson).type=="EKMFRSAIMPORT") | .content' > public.pem
 		fi
 		echo "rsa import key: $R"
 #		./EKMF_SendTKEY.sh public.pem $R 8c123e3317f57abe25007fda598acba69dfa0bc8d31816e81f1426597fc99f1d
@@ -124,7 +124,8 @@ then
 		echo "All uploads finished ✅"
 	;;
 	6) 
-		./OSOQueue.py post | jq -r '.documents[] | select((.metadata | fromjson).type=="EKMFIMPORTRESULT") | .content'
+		#./OSOQueue.py post | jq -r '.documents[] | select((.metadata | fromjson).type=="EKMFIMPORTRESULT") | .content'
+		./EKMFGet.sh
 	;;
 	K)
 		base64 -d K/keys_set.11.gz.b64 | gunzip -c | head -n 35

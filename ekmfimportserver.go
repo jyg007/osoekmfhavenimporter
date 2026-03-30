@@ -215,7 +215,8 @@ func main() {
 
     if mode == "frontend" {
     	//from external
-        http.HandleFunc("/FrontendEKMFCmd", FrontendEKMFCmdHandler)
+//        http.HandleFunc("/FrontendEKMFCmd", FrontendEKMFCmdHandler)
+        http.HandleFunc("/UploadEKMFMsg", FrontendEKMFUploadHandler)
         // to_oso
         http.HandleFunc("/FrontendGetEKMFMsgs", FrontendGetEKMFMsgsHandler)
 
@@ -236,7 +237,7 @@ func main() {
 //#        #     #  #######  #     #     #     #######  #     #  ######   
 //***************************************************************************************************************
 // **************************************************************************************************************
-// Get tge results of all EKMF messages uploaded to the frontend
+// Get get results of all EKMF messages uploaded to the frontend
 // **************************************************************************************************************
 func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -683,6 +684,103 @@ func EKMFCmdValidation(req EKMFCmd)  {
 
   //  w.Header().Set("Content-Type", "application/json")
  //   w.Write([]byte(`{"status":"queued"}`))
+}
+
+
+
+//***************************************************************************************************************
+// Uploads EKMF from OSO
+//***************************************************************************************************************
+
+func FrontendEKMFUploadHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+            http.Error(w, "POST only", http.StatusMethodNotAllowed)
+            return
+    }
+
+    var payload struct {
+            ID        string `json:"id"`
+            Content   string `json:"content"`
+            Signature string `json:"signature"`
+            Metadata  string `json:"metadata"`
+    }
+
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+            http.Error(w, "Invalid JSON", http.StatusBadRequest)
+            return
+    }
+
+    	// --- 1. Get OSO1 from environment ---
+	queue := os.Getenv("OSONAME")
+	if queue == "" {
+		fmt.Println("OSONAME environment variable not set")
+		return
+	}
+
+	// --- 2. Get client cert, key, and CA from environment ---
+	clientCertB64 := os.Getenv("CLIENTCERT")
+	clientKeyB64 := os.Getenv("CLIENTKEY")
+	caCertB64 := os.Getenv("CACERT")
+
+	if clientCertB64 == "" || clientKeyB64 == "" {
+		fmt.Println("CLIENTCERT or CLIENTKEY environment variable not set")
+		return
+	}
+
+	// --- 3. Decode client cert and key ---
+	clientCertPEM, err := base64.StdEncoding.DecodeString(clientCertB64)
+	if err != nil {
+		panic(err)
+	}
+	clientKeyPEM, err := base64.StdEncoding.DecodeString(clientKeyB64)
+	if err != nil {
+		panic(err)
+	}
+
+	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil {
+		panic(err)
+	}
+
+	// --- 4. Prepare CA pool (optional, only if CACERT provided) ---
+	var caCertPool *x509.CertPool
+	if caCertB64 != "" {
+		caCertPEM, err := base64.StdEncoding.DecodeString(caCertB64)
+		if err != nil {
+			panic(err)
+		}
+		caCertPool = x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			panic("failed to append CA certificate")
+		}
+	}
+
+	// --- 5. Create HTTPS client with TLS config ---
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: true, // mimic curl -k
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+	    log.Printf("[POST EKFMQ] JSON marshal error: %v", err)
+	    return
+	}
+	url := fmt.Sprintf("https://localhost:4433/response/%s", queue)
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+	    log.Printf("[POST EKFMQ] Connection error: %v", err)
+	    return
+	}
+	defer resp.Body.Close()
+
 }
 
 
@@ -1204,10 +1302,21 @@ func ProcessEKMFMessage(doc OSODoc, Type string) error {
 	finalJSON, err := json.Marshal(jsonArray)
 	if err != nil {
 	    log.Printf("failed to marshal results: %v", err)
+	    return err
 	} else {
 	    // reuse the incoming doc
 	    doc.Content = string(finalJSON)
-	    doc.Metadata = Type + " results"
+	    metaResp := map[string]string{
+			"type":   Type,
+			"source": "EKMF",
+    	}
+
+		metaBytes, err := json.Marshal(metaResp)
+		if err != nil {
+		    return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+		doc.Metadata = string(metaBytes)
+	    
 	    TxList = append(TxList, doc)
 	}
 
@@ -1571,9 +1680,9 @@ func EKMFGenRsaKeyPair(req OSODoc) error {
     publicPEM := string(pem.EncodeToMemory(pemBlock))
 
     metaResp := map[string]string{
-	"type":   "EKMFRSAIMPORT",
-	"keyid":  keyID,
-	"source": "EKMF",
+		"type":   "EKMFRSAIMPORT",
+		"keyid":  keyID,
+		"source": "EKMF",
     }
 
     metaRespJSON, err := json.Marshal(metaResp)

@@ -328,19 +328,35 @@ func getResponse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := queue.GetAllAndClear()
-	if len(data) > 0 {
-		log.Printf("[GET /response] Returned %d items from queue '%s'", len(data), queueName)
-		for  _ , resp := range data {
-			truncMeta := compactTruncateJSON([]byte(resp.Metadata), 128) // truncate metadata
-			log.Printf("[GET /response]: Metadata = %s",
-				truncMeta,
-			)
-
-		}
-	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+
+	// --- queue has data ---
+	if len(data) > 0 {
+		log.Printf("[GET /response] Returned %d items from queue '%s'", len(data), queueName)
+
+		for _, resp := range data {
+			truncMeta := compactTruncateJSON([]byte(resp.Metadata), 128)
+			log.Printf("[GET /response]: Metadata = %s", truncMeta)
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"count":  len(data),
+			"data":   data,
+		})
+		return
+	}
+
+	// --- queue empty ---
+	log.Printf("[GET /response] Queue '%s' is empty", queueName)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "empty",
+		"count":   0,
+		"message": "no response available in queue",
+		"data":    []interface{}{},
+	})
 }
 // ------------------------------------------------------------
 // mTLS server
