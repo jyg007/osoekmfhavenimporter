@@ -103,8 +103,6 @@ func main() {
         log.Fatal("MODE environment variable not set (frontend or backend)")
     }
 
-    var err error
-
     // Only initialize HSM for backend
     if mode == "backend" {
         hsmTarget := os.Getenv("EP11_IBM_TARGET_HSM")
@@ -126,11 +124,15 @@ func main() {
             }
         }
 
-        // Setup SQLite DB
-        db, err = sql.Open("sqlite3", "./keys.db")
-        if err != nil {
-            panic(err)
-        }
+        dbPath := os.Getenv("DB_PATH")
+		if dbPath == "" {
+		    dbPath = "/data/keys.db"   // good default for containers
+		}
+
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+		    panic(err)
+		}
 
 		// Close cleanly
 		defer func() {

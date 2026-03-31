@@ -24,6 +24,8 @@ echo "-------------------------------------"
 read -n 1 -p "Choice: " choice
 echo "" # Just to move to a new line after the keypress
 
+export DB_PATH="./keys.db"
+
 case $choice in
     1)
 	export ED25519_PUBLIC_KEY=$(openssl pkey -pubin -in K/senderpublic.pem -pubout -outform DER | base64 -w0)
