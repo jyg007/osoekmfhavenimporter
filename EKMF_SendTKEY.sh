@@ -20,7 +20,7 @@ HEX_SEED=$3
 ASN1PK=$(openssl pkey -pubin -in "$PUB_KEY" -outform DER | xxd -p -c 1000)
 
 # Wrap key using your HSM tool
-WRAPPEDKEY=$(./hsmrsawrapTKEY "$ASN1PK" "$HEX_SEED" | grep -v Initia)
+WRAPPEDKEY=$(./bin/hsmrsawrapTKEY "$ASN1PK" "$HEX_SEED" | grep -v Initia)
 
 if [ -z "$WRAPPEDKEY" ]; then
     echo "Error: hsmrsawrapTKEY failed or produced no output."
