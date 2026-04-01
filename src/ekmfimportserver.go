@@ -81,16 +81,19 @@ type Meta struct {
 
 var (
 	db     		     	*sql.DB
+	numAdapters 		int              //number of crypto adapters as defined by EP11_HSM_DOMAIN
+
 	target      		ep11.Target_t
-	numAdapters 		int
-	wrappingKey 		[]byte
-	keyList     		[]InputKey
+    targets_single		[]ep11.Target_t  //ep11 target used for rotation [mono adapters]
+
+	wrappingKey 		[]byte           //transort key
+	keyList     		[]InputKey		 //used to import keys and turn them into OSO msg
 	keyListMu   		sync.Mutex
- 	TxList      		[]OSODoc
-	ekmfCmdQueue 		[]EKMFCmd
+
+ 	TxList      		[]OSODoc         //Backend tx list
+	ekmfCmdQueue 		[]EKMFCmd        //Received EKMF msg by frontend
     ekmfCmdQueueMutex   sync.Mutex
-    processed 			uint64
-    targets_single		[]ep11.Target_t  //for rotation
+    processed 			uint64           //used by backend workers
 )
 
 // **************************************************************************************************************
@@ -217,9 +220,10 @@ func main() {
     }
 
     if mode == "frontend" {
-        http.HandleFunc("/UploadEKMFMsg", FrontendEKMFUploadHandler)
+    	// to_ekmf
+        http.HandleFunc("/FrontendUploadEKMFMsgs", FrontendEKMFUploadHandler)
         // to_oso
-        http.HandleFunc("/FrontendGetEKMFMsgs", FrontendGetEKMFMsgsHandler)
+        http.HandleFunc("/FrontendDownloadEKMFMsgs", FrontendGetEKMFMsgsHandler)
 
         fmt.Println("Frontend server listening on :8080")
         log.Fatal(http.ListenAndServe(":8080", nil))

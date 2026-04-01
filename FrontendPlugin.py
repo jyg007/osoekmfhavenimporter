@@ -18,7 +18,7 @@ BACKUP_FILE="OUTPUTBRIDGEMSGS.bak"
 
 def to_oso():
     try:                                 
-        resp = requests.get(f"{SERVER_URL}/FrontendGetEKMFMsgs?keys_per_doc=10000")
+        resp = requests.get(f"{SERVER_URL}/FrontendDownloadEKMFMsgs?keys_per_doc=10000")
         resp.raise_for_status()
         docs = resp.json()
         if docs is None:
@@ -100,7 +100,7 @@ def to_ekmf():
         if source == "EKMF":
                 try:
                     response = requests.post(
-                        f"{SERVER_URL}/UploadEKMFMsg",
+                        f"{SERVER_URL}/FrontendUploadEKMFMsgs",
                         json=doc,
                         headers={"Content-Type": "application/json"},
                     )
