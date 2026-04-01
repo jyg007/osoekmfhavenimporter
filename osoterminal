@@ -99,14 +99,14 @@ then
 		echo "Generating new seeds"
 		echo 
 		LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"
-		for i in $LIST; do echo "Job $i started" && ./ekmfexport $(cat TKEY) "${KEYGENNB:=1}" | grep -v domain | gzip -c | base64 -w0 > K/keys_set.$i.gz.b64 & done	
+		for i in $LIST; do echo "Job $i started" && ./bin/ekmfexport $(cat TKEY) "${KEYGENNB:=1}" | grep -v domain | gzip -c | base64 -w0 > K/keys_set.$i.gz.b64 & done	
 		wait
 		echo "All jobs finished ✅"
 	;;
 	n)
 		echo "Generating new transport key"
 		echo
-		R=$(./createTKEY | grep -v Initializing)
+		R=$(./bin/createTKEY | grep -v Initializing)
 		TKEY=$(echo "$R" | grep Generated | sed -e '1s/.* //')
 		echo $TKEY > TKEY
 		echo "$R" 

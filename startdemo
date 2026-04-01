@@ -29,7 +29,7 @@ export DB_PATH="./keys.db"
 case $choice in
     1)
 	export ED25519_PUBLIC_KEY=$(openssl pkey -pubin -in K/senderpublic.pem -pubout -outform DER | base64 -w0)
-	export OSONAME=oso1
+	export OSOQUEUE=oso1
 	export CLIENTCERT=$(base64 -w0 certs/client.crt)
 	export CLIENTKEY=$(base64 -w0 certs/client.key)
 	export CACERT=$(base64 -w0 certs/ca.crt)

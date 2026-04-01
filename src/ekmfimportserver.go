@@ -129,7 +129,8 @@ func main() {
 		    dbPath = "/data/keys.db"   // good default for containers
 		}
 
-		db, err := sql.Open("sqlite3", dbPath)
+		var err error
+		db, err = sql.Open("sqlite3", dbPath)
 		if err != nil {
 		    panic(err)
 		}
@@ -216,8 +217,6 @@ func main() {
     }
 
     if mode == "frontend" {
-    	//from external
-//        http.HandleFunc("/FrontendEKMFCmd", FrontendEKMFCmdHandler)
         http.HandleFunc("/UploadEKMFMsg", FrontendEKMFUploadHandler)
         // to_oso
         http.HandleFunc("/FrontendGetEKMFMsgs", FrontendGetEKMFMsgsHandler)
@@ -363,6 +362,8 @@ func ProcessEKMFCmd(cmd EKMFCmd) (OSODoc,error) {
     	return processTransportKey(cmd)
     case "EKMFLIST":
     	return processKMSCommand(cmd,t)
+    case "EKMFDELETE":
+    	return processKMSCommand(cmd,t)
     case "EKMFROTATE":
     	return processKMSCommand(cmd,t)
     case "EKMFACTIVATEROTATION":
@@ -415,6 +416,7 @@ func processGenRSAKeyPair(cmd EKMFCmd) (OSODoc, error) {
     }, nil
 }
 
+// Add EKMF type and OSO uuid
 func processKMSCommand(cmd EKMFCmd, msgType string) (OSODoc, error) {
     meta := map[string]string{
         "type":   msgType,
@@ -428,8 +430,8 @@ func processKMSCommand(cmd EKMFCmd, msgType string) (OSODoc, error) {
 
     return OSODoc{
         ID:        uuid.New().String(),
-        Content:   "",
-        Signature: "",
+        Content:   cmd.Content,
+        Signature: cmd.Signature,
         Metadata:  string(metaJSON),
     }, nil
 }
@@ -480,9 +482,9 @@ func processKeysImport(cmd EKMFCmd) error {
 
 func GetEKMFQMsg() {
 	// --- 1. Get OSO1 from environment ---
-	queue := os.Getenv("OSONAME")
+	queue := os.Getenv("OSOQUEUE")
 	if queue == "" {
-		fmt.Println("OSONAME environment variable not set")
+		fmt.Println("OSOQUEUE environment variable not set")
 		return
 	}
 
@@ -560,24 +562,6 @@ func GetEKMFQMsg() {
 	}
 }
 
-
-func FrontendEKMFCmdHandler(w http.ResponseWriter, r *http.Request) {
-
-    if r.Method != http.MethodPost {
-        http.Error(w, "POST only", http.StatusMethodNotAllowed)
-        return
-    }
-
-    var req EKMFCmd;
-
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Req Invalid JSON body", http.StatusBadRequest)
-        return
-    }
-
-    EKMFCmdValidation(req)
-}
-
 func EKMFCmdValidation(req EKMFCmd)  {
 	verifySignature := func(content string, signatureB64 string) error {
 
@@ -603,8 +587,8 @@ func EKMFCmdValidation(req EKMFCmd)  {
 	    sig, _ := base64.StdEncoding.DecodeString(signatureB64)
 
 	    if !ed25519.Verify(edPubKey, []byte(content), sig) {
-	        log.Printf("signature invalid")
-	        return err
+	        log.Printf("signature invalid %s",content)
+	        return fmt.Errorf("Invalid Signature")
 	    }
 
 	    return nil
@@ -614,7 +598,6 @@ func EKMFCmdValidation(req EKMFCmd)  {
     meta := req.Metadata
     if meta == nil {
     	log.Printf("EKMF Cmd: Metadata missing")
- //       http.Error(w, "Metadata missing", http.StatusBadRequest)
         return
     }
 
@@ -622,7 +605,6 @@ func EKMFCmdValidation(req EKMFCmd)  {
     t, ok := meta["type"].(string)
     if !ok || t == "" {
     	log.Printf("EKMF Cmd: Metadata type missing")
- //       http.Error(w, "Metadata.type missing", http.StatusBadRequest)
         return
     }
 
@@ -632,31 +614,30 @@ func EKMFCmdValidation(req EKMFCmd)  {
         "EKMFLIST":   true,
         "EKMFKEYSIMPORT":   true,
         "EKMFROTATE":   true,
+        "EKMFDELETE":   true,
         "EKMFACTIVATEROTATION":   true,
     }
 
     if !allowedTypes[t] {
- //       http.Error(w, "Not allowed metadata.type", http.StatusBadRequest)
  		log.Printf("EKMF Cmd: Not allowed metadata.type")
         return
     }
 
 	var commandsRequiringSignature = map[string]bool{
 	    "EKMFKEYSIMPORT": true,
+	    "EKMFDELETE": true,
 	}
 
 	// If this command requires a signature → verify it
 	if commandsRequiringSignature[t] {
 	    if req.Signature == "" {
 	    	log.Printf("EKMF Cmd: Signature required for type %s",t)
-//	        http.Error(w, "Signature required for this command", http.StatusUnauthorized)
-	        return
+	        return 
 	    }
 
 	    if err := verifySignature(req.Content, req.Signature); err != nil {
 	        log.Printf("Invalid signature received for message type %s", t)
- //           http.Error(w, fmt.Sprintf("Signature verification failed: %v", err), http.StatusUnauthorized)
-	        return
+	        return 
 	    }
 	}
 
@@ -665,7 +646,6 @@ func EKMFCmdValidation(req EKMFCmd)  {
 		err := processKeysImport(req)
 		if err != nil {
 			log.Printf("Error processing importfile")
- //       	http.Error(w, "Error processing importfile", http.StatusBadRequest)
         	return
     	}
     } else {
@@ -683,9 +663,6 @@ func EKMFCmdValidation(req EKMFCmd)  {
 	    ekmfCmdQueue = append(ekmfCmdQueue, cmd)
 	    ekmfCmdQueueMutex.Unlock()    	
     }
-
-  //  w.Header().Set("Content-Type", "application/json")
- //   w.Write([]byte(`{"status":"queued"}`))
 }
 
 
@@ -713,9 +690,9 @@ func FrontendEKMFUploadHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     	// --- 1. Get OSO1 from environment ---
-	queue := os.Getenv("OSONAME")
+	queue := os.Getenv("OSOQUEUE")
 	if queue == "" {
-		fmt.Println("OSONAME environment variable not set")
+		fmt.Println("OSOQUEUE environment variable not set")
 		return
 	}
 
@@ -858,6 +835,11 @@ func BackendPostEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
         	http.Error(w, err.Error(), http.StatusBadRequest)
         	return
     	}
+    case "EKMFDELETE":
+        if err := KeysDeletion(payload); err != nil {
+        	http.Error(w, err.Error(), http.StatusBadRequest)
+        	return
+    	}
     case "EKMFTKEY":
          if err := EKMFStoreTkey(payload); err != nil {
         	http.Error(w, err.Error(), http.StatusBadRequest)
@@ -974,6 +956,96 @@ func EKMFStoreTkey(req OSODoc) error  {
     return nil
 }
 
+func KeysDeletion(req OSODoc) error {
+
+    // ---- Parse list of key IDs ----
+    var keyIDs []string
+    if err := json.Unmarshal([]byte(req.Content), &keyIDs); err != nil {
+        return fmt.Errorf("invalid key list in content: %w", err)
+    }
+
+    if len(keyIDs) == 0 {
+        return fmt.Errorf("empty key list")
+    }
+
+    // ---- Start transaction ----
+    tx, err := db.Begin()
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+
+    // ---- Response array ----
+    type DeleteResult struct {
+        KeyID  string `json:"key_id"`
+        Status string `json:"status"`
+    }
+
+    results := []DeleteResult{}
+
+    // ---- Delete keys one by one ----
+    for _, id := range keyIDs {
+        res, err := tx.Exec("DELETE FROM keys WHERE key_id = ?", id)
+        if err != nil {
+            results = append(results, DeleteResult{
+                KeyID:  id,
+                Status: "failed",
+            })
+            continue
+        }
+
+        rows, err := res.RowsAffected()
+        if err != nil || rows == 0 {
+            results = append(results, DeleteResult{
+                KeyID:  id,
+                Status: "failed",
+            })
+            continue
+        }
+
+        results = append(results, DeleteResult{
+            KeyID:  id,
+            Status: "deleted",
+        })
+        log.Printf("[KeysDeletion] %s deleted", id)
+    }
+
+    // ---- Commit transaction ----
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("failed to commit deletion: %w", err)
+    }
+
+  
+
+    // ---- Convert results to JSON ----
+    contentJSON, err := json.Marshal(results)
+    if err != nil {
+        return fmt.Errorf("failed to marshal response content: %w", err)
+    }
+
+    // ---- Metadata ----
+    metaResp := map[string]string{
+        "type":   "EKMFDELETEKEYS",
+        "source": "EKMF",
+    }
+
+    metaRespJSON, err := json.Marshal(metaResp)
+    if err != nil {
+        return fmt.Errorf("failed to build metadata JSON: %w", err)
+    }
+
+    // ---- OSODoc response ----
+    resp := OSODoc{
+        ID:        req.ID,
+        Content:   string(contentJSON),
+        Signature: "",
+        Metadata:  string(metaRespJSON),
+    }
+
+    TxList = append(TxList, resp)
+
+    return nil
+}
+
 func ActivateRotation(req OSODoc) error {
     // --- Swap rotated keys into the main column ---
     tx, err := db.Begin()
@@ -1024,6 +1096,7 @@ func ActivateRotation(req OSODoc) error {
 
     return nil
 }
+
 
 type Job struct {
     KeyID string
