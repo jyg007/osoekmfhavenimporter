@@ -17,7 +17,7 @@ INPUT_FILE="OUTPUTBRIDGEMSGS"
 BACKUP_FILE="OUTPUTBRIDGEMSGS.bak"
 
 def to_oso():
-    try:                                 
+    try:                                  
         resp = requests.get(f"{SERVER_URL}/FrontendDownloadEKMFMsgs?keys_per_doc=10000")
         resp.raise_for_status()
         docs = resp.json()

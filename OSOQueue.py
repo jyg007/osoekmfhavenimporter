@@ -12,7 +12,7 @@ mode = sys.argv[1]
 if mode == "pre":
     input_file = "INPUTQUEUEMSGS"
 elif mode == "post":
-    input_file = "OUTPUTBRIDGEMSGS"
+    input_file = "OUTPUTBRIDGEMSGS.bak"
 else:
     print("Argument must be 'pre' or 'post'")
     sys.exit(1)

@@ -34,29 +34,35 @@ import (
     "io"
 )
 
+// Define an EKMF import format for a key
 type InputKey struct {
-	ID   string `json:"id"`
-	Blob string `json:"blob"`
-	Csum string `json:"csum"`
+	ID   		string `json:"id"`
+	WrappedKey 	string `json:"wrappedkey"`
+	Csum 		string `json:"csum"`
 }
 
+// EKMF command - uuid to be generated in the FrontEnd after validation
 type EKMFCmd struct {
     Content   string                 `json:"Content"`
     Signature string                 `json:"Signature"`
     Metadata  map[string]interface{} `json:"Metadata"`
 }
 
-func (c EKMFCmd) MetadataJSON() string {
-    b, _ := json.Marshal(c.Metadata)
-    return string(b)
+type OSODoc struct {
+	ID        string      `json:"id"`        // document index / uuid
+	Content   string      `json:"content"`   
+	Signature string      `json:"signature"` // empty for now
+	Metadata  string       `json:"metadata"`  // static info
 }
 
+// Backend - Batch of keys to import into sqlite
 type ProcessedKey struct {
 	KeyID  string
 	Key    []byte
 	Scheme string
 }
 
+// Backend Batch of keys to process
 type KeyBatch struct {
 	Keys []InputKey
 }
@@ -67,34 +73,42 @@ type ProcessResult struct {
 	FailedIDs    []string `json:"failed_ids"`
 }
 
-type OSODoc struct {
-	ID        string      `json:"id"`        // document index / uuid
-	Content   string      `json:"content"`   
-	Signature string      `json:"signature"` // empty for now
-	Metadata  string       `json:"metadata"`  // static info
-}
-
 type Meta struct {
 	Type  string `json:"type"`
 	KeyID string `json:"keyid"`
 }
 
 var (
-	db     		     	*sql.DB
-	numAdapters 		int              //number of crypto adapters as defined by EP11_HSM_DOMAIN
+	ekmfCmdQueue 		[]EKMFCmd        // Frontend Queue 1 - EKMF cmsg picked from EKMFQ and used to create []OSOdoc 
+    ekmfCmdQueueMutex   sync.Mutex
 
-	target      		ep11.Target_t
-    targets_single		[]ep11.Target_t  //ep11 target used for rotation [mono adapters]
-
-	wrappingKey 		[]byte           //transort key
-	keyList     		[]InputKey		 //used to import keys and turn them into OSO msg
+	keyList     		[]InputKey		 // FrontEnd & Backend Queue: Keys to import and bulked as EKMFKEYSIMPORT msgs
 	keyListMu   		sync.Mutex
 
- 	TxList      		[]OSODoc         //Backend tx list
-	ekmfCmdQueue 		[]EKMFCmd        //Received EKMF msg by frontend
-    ekmfCmdQueueMutex   sync.Mutex
-    processed 			uint64           //used by backend workers
+ 	TxList      		[]OSODoc         // Backend OSO msgs queues for Output Bridge (stores results of EKMF commands)
+	wrappingKey 		[]byte           // Backend - EKMF transort key set per OSO iteration for import
+	
+	db     		     	*sql.DB          // Backend - db 
+	numAdapters 		int              // Backend - number of crypto adapters as defined by EP11_HSM_DOMAIN
+	target      		ep11.Target_t    // Backend
+    targets_single		[]ep11.Target_t  // Backend - ep11 target used for rotation [mono adapters]
+    backendprocessed 	uint64           // Backend used by backend workers
 )
+
+type cmdConfig struct {
+    allowed            bool
+    requiresSignature  bool
+}
+
+var EKMFcommands = map[string]cmdConfig{
+    "EKMFGENRSAKEYPAIR":     {allowed: true},
+    "EKMFTKEY":              {allowed: true},
+    "EKMFLIST":              {allowed: true},
+    "EKMFKEYSIMPORT":        {allowed: true, requiresSignature: true},   // ed25519 sig, the ekmf admin signs the ekmf contents besides the mTLS authent
+    "EKMFROTATE":            {allowed: true},
+    "EKMFDELETE":            {allowed: true, requiresSignature: true},
+    "EKMFACTIVATEROTATION":  {allowed: true},
+}
 
 // **************************************************************************************************************
 // **************************************************************************************************************
@@ -223,13 +237,12 @@ func main() {
     	// to_ekmf
         http.HandleFunc("/FrontendUploadEKMFMsgs", FrontendEKMFUploadHandler)
         // to_oso
-        http.HandleFunc("/FrontendDownloadEKMFMsgs", FrontendGetEKMFMsgsHandler)
+        http.HandleFunc("/FrontendDownloadEKMFMsgs", FrontendDownloadEKMFMsgsHandler)
 
         fmt.Println("Frontend server listening on :8080")
         log.Fatal(http.ListenAndServe(":8080", nil))
     }
 }
-
 
 //***************************************************************************************************************
 //***************************************************************************************************************
@@ -242,28 +255,56 @@ func main() {
 //#        #     #  #######  #     #     #     #######  #     #  ######   
 //***************************************************************************************************************
 // **************************************************************************************************************
-// Get get results of all EKMF messages uploaded to the frontend
+// Handler to be invoked by OSO plugin
+// Turn received EKMF msgs from EKMFQ into OSO Docs
+// Bulking of EKMF keys to import into potential smaller message [keys_per_doc parameter]
 // **************************************************************************************************************
-func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
+func FrontendDownloadEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var docs []OSODoc
-	// Process Commands Msg
-    cmds := GetAllEKMFCmd()
 
-    for _, cmd := range cmds {
-        doc, err := ProcessEKMFCmd(cmd)
-        if err != nil {
-            log.Printf("Failed: %v", err)
-        } else  {
-        	docs = append(docs, doc)
-        }
-    }
+	GetEKMFQMsgs()    // Next function
 
-    //Digest imported keys via EKMFKEYSIMPORT msg
+    ekmfCmdQueueMutex.Lock()
+    if len(ekmfCmdQueue) != 0 {       
+	    // Copy queue
+	    cmds := make([]EKMFCmd, len(ekmfCmdQueue))
+	    copy(cmds, ekmfCmdQueue)
+
+    	// Clear queue
+    	ekmfCmdQueue = nil
+    	ekmfCmdQueueMutex.Unlock()
+
+	    for _, cmd := range cmds {
+	       // doc, err := ProcessEKMFCmd(cmd)
+	        metadataJSON, err := cmd.MetadataJSON()
+			if err != nil {
+		    	log.Printf("EKMF Cmd error in metadataJSON: %v", err)
+		    	continue
+		    }
+	        doc := OSODoc{
+	     	   	ID:        uuid.New().String(),
+		        Content:   cmd.Content,
+	        	Signature: cmd.Signature,
+	        	Metadata:	string(metadataJSON),
+	        	//Metadata:  cmd.Metadata,
+	   		}
+
+	        if err != nil {
+	            log.Printf("Failed: %v", err)
+	        } else  {
+	        	docs = append(docs, doc)
+	        }
+	    }
+	} else {
+    	ekmfCmdQueueMutex.Unlock()
+	}
+
+    //Creates EKMFKEYSIMPORT by bulking them using keysPerDoc params
 	keysPerDoc := 1000
 	fmt.Sscanf(r.URL.Query().Get("keys_per_doc"), "%d", &keysPerDoc)
 	if keysPerDoc <= 0 {
@@ -278,7 +319,6 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	keyListMu.Unlock()
 
 	nKeys := len(keysSnapshot)
-
 
 	for i := 0; i < nKeys; i += keysPerDoc {
 		end := i + keysPerDoc
@@ -331,218 +371,28 @@ func FrontendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(docs)
 }
 
-func GetAllEKMFCmd() []EKMFCmd {
-
-	//contact the remote server EKMFQ
-	GetEKMFQMsg()
-
-    ekmfCmdQueueMutex.Lock()
-    defer ekmfCmdQueueMutex.Unlock()
-
-    if len(ekmfCmdQueue) == 0 {
-        return nil
-    }
-
-    // Copy queue
-    cmds := make([]EKMFCmd, len(ekmfCmdQueue))
-    copy(cmds, ekmfCmdQueue)
-
-    // Clear queue
-    ekmfCmdQueue = nil
-
-    return cmds
-}
-
-func ProcessEKMFCmd(cmd EKMFCmd) (OSODoc,error) {
-    t, ok := cmd.Metadata["type"].(string)
-    if !ok {
-        return OSODoc{},fmt.Errorf("missing type")
-    }
-
-    switch t {
-    case "EKMFGENRSAKEYPAIR":
-    	return processGenRSAKeyPair(cmd)
-    case "EKMFTKEY":
-    	return processTransportKey(cmd)
-    case "EKMFLIST":
-    	return processKMSCommand(cmd,t)
-    case "EKMFDELETE":
-    	return processKMSCommand(cmd,t)
-    case "EKMFROTATE":
-    	return processKMSCommand(cmd,t)
-    case "EKMFACTIVATEROTATION":
-    	return processKMSCommand(cmd,t)
-    default:
-        return OSODoc{}, fmt.Errorf("Process EKMF Cmd - Unknown type: %s", t)
-    }
-}
-
-func processTransportKey(cmd EKMFCmd) (OSODoc, error) {
-    // Make sure metadata contains "keyid"
-    keyidVal, ok := cmd.Metadata["keyid"].(string)
-    if !ok || keyidVal == "" {
-        return OSODoc{},fmt.Errorf("EKMFTKEY cmd missing keyid in metadata")
-    }
-
-    // Make sure Content is not empty
-    if cmd.Content == "" {
-        return OSODoc{},fmt.Errorf("wrappedkey not provided")
-    }
-
-   return OSODoc{
-        ID:        uuid.New().String(),
-        Content:   cmd.Content,          // content comes from the cmd
-        Signature: "",
-        Metadata:  cmd.MetadataJSON(),   // metadata as-is
-    }, nil
-
-}
-  
-func processGenRSAKeyPair(cmd EKMFCmd) (OSODoc, error) {
-    rsakeyid := fmt.Sprintf("rsa-%d", time.Now().UnixNano())
-
-    meta := map[string]string{
-        "type":   "EKMFGENRSAKEYPAIR",
-        "source": "EKMF",
-        "keyid":  rsakeyid,
-    }
-
-    metaJSON, err := json.Marshal(meta)
+// turn a json into a string
+func (c EKMFCmd) MetadataJSON() (string, error) {
+    b, err := json.Marshal(c.Metadata)
     if err != nil {
-        return OSODoc{},err
+        return "", fmt.Errorf("failed to marshal metadata: %w", err)
     }
-
-    return OSODoc{
-        ID:        uuid.New().String(),
-        Content:   "",
-        Signature: "",
-        Metadata:  string(metaJSON),
-    }, nil
+    return string(b), nil
 }
 
-// Add EKMF type and OSO uuid
-func processKMSCommand(cmd EKMFCmd, msgType string) (OSODoc, error) {
-    meta := map[string]string{
-        "type":   msgType,
-        "source": "EKMF",
-    }
+//**************************************************************************************************
+//**************************************************************************************************
+// Retrieves queued EKMF cmdq from EKMFQ
+//**************************************************************************************************
+//**************************************************************************************************
 
-    metaJSON, err := json.Marshal(meta)
-    if err != nil {
-        return OSODoc{}, err
-    }
+func GetEKMFQMsgs() {
+	client, queue, err := FrontendConnectEKMFQ()
 
-    return OSODoc{
-        ID:        uuid.New().String(),
-        Content:   cmd.Content,
-        Signature: cmd.Signature,
-        Metadata:  string(metaJSON),
-    }, nil
-}
-
-
-func processKeysImport(cmd EKMFCmd) error {
-	id, ok := cmd.Metadata["id"].(string)
-    if !ok ||  id == "" {
-        return fmt.Errorf("id missing metadata")
-    }
-   	log.Printf("Processing EMKF key file upload ID: %s", id)
-
-
-    // Make sure Content is not empty
-    if cmd.Content == "" {
-        return fmt.Errorf("no content provided")
-    }
-
-	gzipBytes, err := base64.StdEncoding.DecodeString(cmd.Content)
 	if err != nil {
-		return err
-	}
-
-	reader, err := gzip.NewReader(bytes.NewReader(gzipBytes))
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-
-	var keys []InputKey
-	if err := json.NewDecoder(reader).Decode(&keys); err != nil {
-		return fmt.Errorf("EKMF File ID %s : invalid JSON inside gzip", id)
-	}
-
-	keyListMu.Lock()
-	keyList = append(keyList, keys...)
-	keyListMu.Unlock()
-
-	return nil
-}
-
-
-//**************************************************************************************************
-//**************************************************************************************************
-//  API to interact with EKMF addon and submit commands
-//**************************************************************************************************
-//**************************************************************************************************
-
-func GetEKMFQMsg() {
-	// --- 1. Get OSO1 from environment ---
-	queue := os.Getenv("OSOQUEUE")
-	if queue == "" {
-		fmt.Println("OSOQUEUE environment variable not set")
+		log.Printf("failed to connect EKMFQ: %v", err)
 		return
 	}
-
-	// --- 2. Get client cert, key, and CA from environment ---
-	clientCertB64 := os.Getenv("CLIENTCERT")
-	clientKeyB64 := os.Getenv("CLIENTKEY")
-	caCertB64 := os.Getenv("CACERT")
-
-	if clientCertB64 == "" || clientKeyB64 == "" {
-		fmt.Println("CLIENTCERT or CLIENTKEY environment variable not set")
-		return
-	}
-
-	// --- 3. Decode client cert and key ---
-	clientCertPEM, err := base64.StdEncoding.DecodeString(clientCertB64)
-	if err != nil {
-		panic(err)
-	}
-	clientKeyPEM, err := base64.StdEncoding.DecodeString(clientKeyB64)
-	if err != nil {
-		panic(err)
-	}
-
-	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
-	if err != nil {
-		panic(err)
-	}
-
-	// --- 4. Prepare CA pool (optional, only if CACERT provided) ---
-	var caCertPool *x509.CertPool
-	if caCertB64 != "" {
-		caCertPEM, err := base64.StdEncoding.DecodeString(caCertB64)
-		if err != nil {
-			panic(err)
-		}
-		caCertPool = x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-			panic("failed to append CA certificate")
-		}
-	}
-
-	// --- 5. Create HTTPS client with TLS config ---
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		RootCAs:            caCertPool,
-		InsecureSkipVerify: true, // mimic curl -k
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-	}
-
 	// --- 6. Make GET request ---
 	url := fmt.Sprintf("https://localhost:4433/payload/%s", queue)
 	resp, err := client.Get(url)
@@ -560,11 +410,14 @@ func GetEKMFQMsg() {
 		return
 	}
 
-	// --- Call FrontendEKMFCmd for each command ---
 	for _, cmd := range cmds {
-		EKMFCmdValidation(cmd)
+		EKMFCmdValidation(cmd)   // Next function
 	}
 }
+
+//*****************************************************************************************************
+//  Add received EKMFQ EKMFmsgs into Frontend EKMFCmd Queue
+//*****************************************************************************************************
 
 func EKMFCmdValidation(req EKMFCmd)  {
 	verifySignature := func(content string, signatureB64 string) error {
@@ -612,29 +465,14 @@ func EKMFCmdValidation(req EKMFCmd)  {
         return
     }
 
-    allowedTypes := map[string]bool{
-        "EKMFGENRSAKEYPAIR": true,
-        "EKMFTKEY": true,
-        "EKMFLIST":   true,
-        "EKMFKEYSIMPORT":   true,
-        "EKMFROTATE":   true,
-        "EKMFDELETE":   true,
-        "EKMFACTIVATEROTATION":   true,
-    }
-
-    if !allowedTypes[t] {
- 		log.Printf("EKMF Cmd: Not allowed metadata.type")
-        return
-    }
-
-	var commandsRequiringSignature = map[string]bool{
-	    "EKMFKEYSIMPORT": true,
-	    "EKMFDELETE": true,
+	cfg, exists := EKMFcommands[t]
+	if !exists || !cfg.allowed {
+	    log.Printf("EKMF Cmd: Not allowed metadata.type")
+	    return
 	}
 
-	// If this command requires a signature → verify it
-	if commandsRequiringSignature[t] {
-	    if req.Signature == "" {
+	if cfg.requiresSignature {
+        if req.Signature == "" {
 	    	log.Printf("EKMF Cmd: Signature required for type %s",t)
 	        return 
 	    }
@@ -645,14 +483,63 @@ func EKMFCmdValidation(req EKMFCmd)  {
 	    }
 	}
 
+	// Import file are unzipped and ekmf keys to be reassembled later as small oso messages if necessary
     if (t == "EKMFKEYSIMPORT") {
-    	// Keys upload populates immediately the internal queue list
-		err := processKeysImport(req)
+		id, ok := req.Metadata["id"].(string)
+	    if !ok ||  id == "" {
+	        log.Printf("EKMFKEYSIMPORT id missing metadata")
+	        return
+	    }
+	   	log.Printf("Processing EMKF key file upload ID: %s", id)
+
+
+	    // Make sure Content is not empty
+	    if req.Content == "" {
+	        log.Printf("EKMFKEYSIMPORT %s No content provided",id)
+	        return
+	    }
+
+		gzipBytes, err := base64.StdEncoding.DecodeString(req.Content)
 		if err != nil {
-			log.Printf("Error processing importfile")
-        	return
-    	}
+			log.Printf("EKMFKEYSIMPORT %s base64 failure: %v", id,err)
+			return
+		}
+
+		reader, err := gzip.NewReader(bytes.NewReader(gzipBytes))
+		if err != nil {
+			log.Printf("EKMFKEYSIMPORT %s gzip failure: %v", id,err)
+			return
+		}
+		defer reader.Close()
+
+		var keys []InputKey
+		if err := json.NewDecoder(reader).Decode(&keys); err != nil {
+			log.Printf("EKMF File ID %s : invalid JSON inside gzip", id)
+			return
+		}
+
+		//Put in Import Queue 
+		keyListMu.Lock()
+		keyList = append(keyList, keys...)
+		keyListMu.Unlock()
     } else {
+
+    	switch t {
+		  	case "EKMFGENRSAKEYPAIR":
+		  	    rsakeyid := fmt.Sprintf("rsa-%d", time.Now().UnixNano())
+		   		req.Metadata["keyid"] = rsakeyid
+	  	    case "EKMFTKEY":
+			    keyidVal, ok := req.Metadata["keyid"].(string)
+			    if !ok || keyidVal == "" {
+			        log.Printf("EKMFTKEY cmd missing keyid in metadata")
+			    }
+
+			    // Make sure Content is not empty
+			    if req.Content == "" {
+			        log.Printf("wrappedkey not provided")
+			    }
+		}
+
 	    // Add source attribute
 	    meta["source"] = "EKMF"
 
@@ -662,17 +549,85 @@ func EKMFCmdValidation(req EKMFCmd)  {
 	        Metadata:  meta,
 	    }
 
-	    // Store in global queue
+	    // Store in EKMF Cmd global queue
 	    ekmfCmdQueueMutex.Lock()
 	    ekmfCmdQueue = append(ekmfCmdQueue, cmd)
 	    ekmfCmdQueueMutex.Unlock()    	
     }
 }
 
+//***************************************************************************************************************
+// Connection to EKMFQ
+//		Returns http.Client
+//		connection is defined using environement variables: 
+//			OSOQUEUE: logical name representing the OSO, for exemple OSO1, PRODOSO1, etc
+//			CLIENTCERT, CLIENTKEY, CACERT: cert, key and ca cert for mTLS authentication with EKMFQ
+//***************************************************************************************************************
 
+func FrontendConnectEKMFQ() (*http.Client, string,error) {
+	// --- 1. Get OSO queue ---
+	queue := os.Getenv("OSOQUEUE")
+	if queue == "" {
+		return nil, "", fmt.Errorf("OSOQUEUE environment variable not set")
+	}
+
+	// --- 2. Get client cert, key, and CA ---
+	clientCertB64 := os.Getenv("CLIENTCERT")
+	clientKeyB64 := os.Getenv("CLIENTKEY")
+	caCertB64 := os.Getenv("CACERT")
+
+	if clientCertB64 == "" || clientKeyB64 == "" {
+		return nil, "", fmt.Errorf("CLIENTCERT or CLIENTKEY environment variable not set")
+	}
+
+	// --- 3. Decode certs ---
+	clientCertPEM, err := base64.StdEncoding.DecodeString(clientCertB64)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decode CLIENTCERT: %w", err)
+	}
+
+	clientKeyPEM, err := base64.StdEncoding.DecodeString(clientKeyB64)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decode CLIENTKEY: %w", err)
+	}
+
+	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid client certificate/key: %w", err)
+	}
+
+	// --- 4. CA pool (optional) ---
+	var caCertPool *x509.CertPool
+	if caCertB64 != "" {
+		caCertPEM, err := base64.StdEncoding.DecodeString(caCertB64)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to decode CACERT: %w", err)
+		}
+
+		caCertPool = x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			return nil, "", fmt.Errorf("failed to append CA certificate")
+		}
+	}
+
+	// --- 5. TLS config ---
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: true, // ⚠️ consider making this configurable
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	return client, queue, nil
+}
 
 //***************************************************************************************************************
-// Uploads EKMF from OSO
+// Handler .  To be invoked by OSO plugin  to send OSOdocs to EKFMQ
 //***************************************************************************************************************
 
 func FrontendEKMFUploadHandler(w http.ResponseWriter, r *http.Request) {
@@ -693,79 +648,26 @@ func FrontendEKMFUploadHandler(w http.ResponseWriter, r *http.Request) {
             return
     }
 
-    	// --- 1. Get OSO1 from environment ---
-	queue := os.Getenv("OSOQUEUE")
-	if queue == "" {
-		fmt.Println("OSOQUEUE environment variable not set")
+	client, queue, err := FrontendConnectEKMFQ()
+
+	if err != nil {
+		log.Printf("failed to connect EKMFQ: %v", err)
 		return
-	}
-
-	// --- 2. Get client cert, key, and CA from environment ---
-	clientCertB64 := os.Getenv("CLIENTCERT")
-	clientKeyB64 := os.Getenv("CLIENTKEY")
-	caCertB64 := os.Getenv("CACERT")
-
-	if clientCertB64 == "" || clientKeyB64 == "" {
-		fmt.Println("CLIENTCERT or CLIENTKEY environment variable not set")
-		return
-	}
-
-	// --- 3. Decode client cert and key ---
-	clientCertPEM, err := base64.StdEncoding.DecodeString(clientCertB64)
-	if err != nil {
-		panic(err)
-	}
-	clientKeyPEM, err := base64.StdEncoding.DecodeString(clientKeyB64)
-	if err != nil {
-		panic(err)
-	}
-
-	cert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
-	if err != nil {
-		panic(err)
-	}
-
-	// --- 4. Prepare CA pool (optional, only if CACERT provided) ---
-	var caCertPool *x509.CertPool
-	if caCertB64 != "" {
-		caCertPEM, err := base64.StdEncoding.DecodeString(caCertB64)
+	} else {
+		jsonData, err := json.Marshal(payload)
 		if err != nil {
-			panic(err)
+		    log.Printf("[POST EKFMQ] JSON marshal error: %v", err)
+		    return
 		}
-		caCertPool = x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-			panic("failed to append CA certificate")
+		url := fmt.Sprintf("https://localhost:4433/response/%s", queue)
+		resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+		    log.Printf("[POST EKFMQ] Connection error: %v", err)
+		    return
 		}
+		defer resp.Body.Close()
 	}
-
-	// --- 5. Create HTTPS client with TLS config ---
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		RootCAs:            caCertPool,
-		InsecureSkipVerify: true, // mimic curl -k
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-	    log.Printf("[POST EKFMQ] JSON marshal error: %v", err)
-	    return
-	}
-	url := fmt.Sprintf("https://localhost:4433/response/%s", queue)
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-	    log.Printf("[POST EKFMQ] Connection error: %v", err)
-	    return
-	}
-	defer resp.Body.Close()
-
 }
-
 
 //***************************************************************************************************************
 //***************************************************************************************************************
@@ -780,7 +682,11 @@ func FrontendEKMFUploadHandler(w http.ResponseWriter, r *http.Request) {
 //***************************************************************************************************************
 
 //***************************************************************************************************************
-// Uploads EKMF from OSO
+// API handler - To be called from OSO plugin to upload EKMF OSO doc
+//     source="EKMF"  is not checked, assume to be verified by the plugin
+//
+//  All actions will be executed in the upload steps when Input Bridge connects the plugin
+//  Results will be retrieved in the download handler (last function)
 //***************************************************************************************************************
 
 func BackendPostEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1191,7 +1097,7 @@ func worker2(jobs <-chan Job, results chan<- Result, wg *sync.WaitGroup, p Proce
         }
 
         results <- r
-        atomic.AddUint64(&processed, 1)
+        atomic.AddUint64(&backendprocessed, 1)
     }
 }
 
@@ -1276,7 +1182,7 @@ func ProcessEKMFMessage(doc OSODoc, Type string) error {
 	// --- start SQLite writer ---
     go updateWorker(db, updateChan, updateDone)
 	// --- performance timer ---
-	processed = 0
+	backendprocessed = 0
 	start := time.Now()
 	done := make(chan struct{})
 
@@ -1288,7 +1194,7 @@ func ProcessEKMFMessage(doc OSODoc, Type string) error {
 	    for {
 	        select {
 	        case <-ticker.C:
-	            n := atomic.LoadUint64(&processed)
+	            n := atomic.LoadUint64(&backendprocessed)
 	            elapsed := time.Since(start).Seconds()
 	            if elapsed > 0 {
 	                log.Printf("[EKMF %s] processed=%d speed=%.0f keys/sec", Type, n, float64(n)/elapsed)
@@ -1399,7 +1305,7 @@ func ProcessEKMFMessage(doc OSODoc, Type string) error {
 	    TxList = append(TxList, doc)
 	}
 
-	total := atomic.LoadUint64(&processed)
+	total := atomic.LoadUint64(&backendprocessed)
 	elapsed := time.Since(start).Seconds()
 
 	log.Printf("[EKMF] DONE type=%s total=%d time=%.2fs speed=%.0f keys/sec workers=%d",
@@ -1413,34 +1319,29 @@ func ProcessEKMFMessage(doc OSODoc, Type string) error {
 	return nil
 }
 
-
 // **************************************************************************************************************
-// PROCESS
+// Launch parallel keys import processing if transport key was not forgotten
 // **************************************************************************************************************
 func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	
-	keyListMu.Lock()
-	if wrappingKey == nil {
-		keyList = nil
-		keyListMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("No transport keys set"))
-		log.Println("[BackendProcess] No transport key set")
-		return
-	}
-	keyListMu.Unlock()
-
 	batchSize := 100000
 	fmt.Sscanf(r.URL.Query().Get("batch_size"), "%d", &batchSize)
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
 
-	keyListMu.Lock()
+	keyListMu.Lock()    // not really necessary for backend as single thread
 	if len(keyList) == 0 {
 		keyListMu.Unlock()
-		http.Error(w, "No keys uploaded", http.StatusBadRequest)
-		log.Println("[BackendProcess] No Keys uploaded")
+		w.WriteHeader(http.StatusNoContent) 
+		return
+	}
+
+	if wrappingKey == nil {
+		keyList = nil
+		keyListMu.Unlock()
+		log.Println("[BackendProcess] No transport key set. Aborting import process.")
+		http.Error(w, "No transport key set", http.StatusBadRequest)		
 		return
 	}
 
@@ -1459,7 +1360,7 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	go batchWriter(resultCh, &writerWG, &successCount)
 
 	numWorkers := numAdapters * 8
-	log.Printf("starting %d workers", numWorkers)
+	log.Printf("Starting %d workers", numWorkers)
 
 	var workerWG sync.WaitGroup
 
@@ -1493,20 +1394,20 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	    FailedCount:  len(failedIDs),
 	    FailedIDs:    failedIDs,
 	}
-        log.Printf("Keys import finished: %d successful, %d failed", result.SuccessCount, result.FailedCount)
+    log.Printf("Keys import finished: %d successful, %d failed", result.SuccessCount, result.FailedCount)
 
 	// 2. Marshal the result to a JSON string for the "content" field
 	resultBytes, _ := json.Marshal(result)
 
-        meta := map[string]string{
-                "source": "EKMF",   // only if you also want the same field as Python
-                "type": "EKMFIMPORTRESULT",
-        }
-        metaJSON, err := json.Marshal(meta)
-                if err != nil {
-                http.Error(w, "Failed to build metadata", http.StatusInternalServerError)
-                return
-        }
+    meta := map[string]string{
+            "source": 	"EKMF",   // only if you also want the same field as Python
+            "type": 	"EKMFIMPORTRESULT",
+    }
+    metaJSON, err := json.Marshal(meta)
+            if err != nil {
+            http.Error(w, "Failed to build metadata", http.StatusInternalServerError)
+            return
+    }
 
 	// 3. Build the final envelope response
 	finalResp := OSODoc{
@@ -1526,16 +1427,16 @@ func BackendProcessHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent) 
 }
 
-//
-// WORKER
-//
+//***********************************************************************************************************************
+// AES Unwrap WORKERs
+//***********************************************************************************************************************
 func worker(jobs <-chan KeyBatch, results chan<- ProcessedKey, failed chan<- string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for batch := range jobs {
 		for _, k := range batch.Keys {
 
-			data, err := hex.DecodeString(k.Blob)
+			data, err := hex.DecodeString(k.WrappedKey)
 			if err != nil {
 				log.Printf("failed to decode hex blob for key %s: %v", k.ID, err)
 				failed <- k.ID
@@ -1587,9 +1488,9 @@ func worker(jobs <-chan KeyBatch, results chan<- ProcessedKey, failed chan<- str
 	}
 }
 
-//
+//***********************************************************************************************************
 // SQLITE WRITER
-//
+//***********************************************************************************************************
 func batchWriter(results <-chan ProcessedKey, wg *sync.WaitGroup, successCount *int) {
 	defer wg.Done()
 
@@ -1668,6 +1569,7 @@ func batchWriter(results <-chan ProcessedKey, wg *sync.WaitGroup, successCount *
 }
 
 // **************************************************************************************************************
+// Read import files EKMF Message and appends all keys in keyList queue for final processing
 // **************************************************************************************************************
 func EKMFImportkeys(doc OSODoc) error {
     // --- Decode base64 ---
@@ -1783,6 +1685,8 @@ func EKMFGenRsaKeyPair(req OSODoc) error {
 }
 
 // **************************************************************************************************************
+// API Handler.
+//		Just return the results of all EKMF commands
 // **************************************************************************************************************
 func BackendGetEKMFMsgsHandler(w http.ResponseWriter, r *http.Request) {
 

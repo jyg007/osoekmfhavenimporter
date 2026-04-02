@@ -25,7 +25,7 @@ import (
 
 type KeyOutput struct {
 	KeyID       string `json:"id"`
-	BlobWrapped string `json:"blob"`
+	WrappedKey  string `json:"wrappedkey"`
 	Checksum    string `json:"csum"`
 }
 
@@ -100,7 +100,7 @@ func main() {
 
 		results = append(results, KeyOutput{
 			KeyID:       string(keyID),
-			BlobWrapped: hex.EncodeToString(blobWrapped),
+			WrappedKey: hex.EncodeToString(blobWrapped),
 			Checksum:    hex.EncodeToString(csum[:3]), // first 3 bytes only
 		})
 	}
